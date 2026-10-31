@@ -70,6 +70,7 @@ changed() {
 
 place "$ROOT/bin/claude-switch" "$BIN/claude-switch" 755
 place "$ROOT/share/chrome-host.py" "$SHARE/chrome-host.py" 755
+place "$ROOT/share/desktop.py" "$SHARE/desktop.py" 755
 for file in manifest.json worker.js; do
     place "$ROOT/share/chrome-extension/$file" "$SHARE/chrome-extension/$file" 644
 done

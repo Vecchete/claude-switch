@@ -10,11 +10,13 @@ scratch `HOME`:
 | `test-chrome-host.py` | the Chrome host, with a fake extension, a fake claude.ai and a cookie jar |
 | `test-switch-chrome.py` | `claude-switch` driving the Chrome host end to end |
 | `test-worker.mjs` | the extension's worker, with a fake `chrome` API (needs `node`) |
+| `test-desktop.py` | `desktop.py`, with a Desktop folder, a cookie database and fake Desktop processes |
+| `test-switch-desktop.sh` | `claude-switch` driving `desktop.py` |
 | `test-install.sh` | `install.sh`, with a fake `systemctl` |
 
 ```bash
 tests/run.sh                 # every suite
-tests/run.sh switch install  # some of them
+tests/run.sh switch desktop  # some of them
 ```
 
 ## Mutants
@@ -25,7 +27,7 @@ no test holds. Every one of them must end `killed`.
 
 ```bash
 tests/mutants.py             # all, one at a time
-tests/mutants.py install     # the mutants of one file: switch, host or install
+tests/mutants.py desktop     # the mutants of one file: switch, host, install or desktop
 ```
 
 Run them one at a time. The Chrome host suite depends on timing, and a run under load that fails for
@@ -33,7 +35,7 @@ that reason counts a mutant as killed when it is not.
 
 ## Checked live
 
-A suite can't show what Claude Code and claude.ai do, so these were checked on the real
+A suite can't show what Claude Code, claude.ai and Desktop do, so these were checked on the real
 thing:
 
 - Claude Code 2.1.314: `claude auth status` refreshes an expired login without a model request, a
@@ -41,3 +43,5 @@ thing:
 - claude.ai, 2026-10-30: a made-up session gets 403 JSON `account_session_invalid` from
   `/api/account`, saved sessions swap without a sign-in, a page that sends half a swapped session gets
   it revoked.
+- Claude Desktop 4.4212.0, 2026-10-31: TERM closes it cleanly in under a second and it removes its
+  `SingletonLock`.

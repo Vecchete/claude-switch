@@ -1,11 +1,12 @@
 # claude-switch
 
-Switches the Claude account of this machine with one command, from any folder. Claude Code and
-claude.ai in Chrome move to the account you pick, and nothing else changes: one
+Switches the Claude account of this machine with one command, from any folder. Claude Code, claude.ai
+in Chrome and Claude Desktop all move to the account you pick, and nothing else changes: one
 `~/.claude`, one `~/.claude.json`, the same rules, MCP servers, sessions, settings and history for
 every account.
 
-Linux only, tested on Ubuntu 24.04 with Claude Code 2.1.314 and Chrome Beta 155.
+Linux only, tested on Ubuntu 24.04 with Claude Code 2.1.314, Chrome Beta 155 and Claude Desktop
+4.4212.0 (the official Linux beta).
 
 ## Install
 
@@ -19,7 +20,7 @@ git clone git@github.com:Vecchete/claude-switch.git ~/claude-switch
 | From | To |
 |---|---|
 | `bin/claude-switch` | `~/.local/bin/claude-switch` |
-| `share/chrome-host.py` | `~/.local/share/claude-switch/` |
+| `share/chrome-host.py`, `share/desktop.py` | `~/.local/share/claude-switch/` |
 | `share/chrome-extension/` | `~/.local/share/claude-switch/chrome-extension/` |
 | `systemd/claude-switch-refresh.*` | `~/.config/systemd/user/`, the timer enabled |
 | the native host manifest, written by `install.sh` | `NativeMessagingHosts` of each Chrome installed |
@@ -28,7 +29,8 @@ Run it again after any change in the checkout. `./install.sh --check` says what 
 nothing. It needs `jq`, `flock`, `python3` and `claude` in the `PATH`.
 
 For claude.ai in Chrome, load the extension once: `chrome://extensions`, Developer mode, Load
-unpacked, `~/.local/share/claude-switch/chrome-extension`.
+unpacked, `~/.local/share/claude-switch/chrome-extension`. Claude Desktop needs nothing more than
+being installed from Anthropic's apt repository.
 
 ## Use
 
@@ -49,9 +51,11 @@ Add each account once with `claude-switch login`. From then on a switch never as
   Running sessions move to the new account at their next request.
 - claude.ai in Chrome: the four session cookies, swapped by the companion extension while claude.ai
   is blocked, then the claude.ai tabs reload.
+- Claude Desktop: its claude.ai session and the tokens of its Code tab. Desktop has to be closed for
+  that, so an open Desktop is restarted when you say so.
 
-Everything else stays: MCP logins, settings, projects, sessions, Chrome preferences. Each account
-keeps its own history on claude.ai, and it comes back with the account.
+Everything else stays: MCP logins, settings, projects, sessions, Chrome and Desktop preferences. Each
+account keeps its own history on claude.ai, and it comes back with the account.
 
 The accounts live in `~/.claude-accounts`, one file per account, readable only by you. They hold
 logins, so they never go in this repository.
@@ -61,4 +65,5 @@ logins, so they never go in this repository.
 - [How a switch works](docs/switch.md)
 - [Keeping the other accounts signed in](docs/refresh.md)
 - [claude.ai in Chrome](docs/chrome.md)
+- [Claude Desktop](docs/desktop.md)
 - [Tests](docs/testing.md)

@@ -2,7 +2,7 @@
 """Breaks one guard at a time and runs the suite that must catch it. A mutant that stays green is a guard
 no test holds. Every mutant undoes a behaviour that a review or a live incident asked for.
 
-Usage: tests/mutants.py [-j JOBS] [NAME_OR_TARGET...]   (targets: switch, host, install)
+Usage: tests/mutants.py [-j JOBS] [NAME_OR_TARGET...]   (targets: switch, host, install, desktop)
 """
 import argparse
 import concurrent.futures
@@ -18,6 +18,7 @@ TARGETS = {
     "switch": ROOT / "bin/claude-switch",
     "host": ROOT / "share/chrome-host.py",
     "install": ROOT / "install.sh",
+    "desktop": ROOT / "share/desktop.py",
 }
 
 # (name, target, suite, text of the target, what replaces it)
@@ -100,6 +101,46 @@ MUTANTS = [
     ("block-left", "host", "chrome-host",
      '    with switching:\n        try:\n            ask("release")\n        except (OSError, RuntimeError, queue.Empty):\n'
      "            pass\n", ""),
+    # Claude Desktop, from the switch.
+    ("desktop-never-asked", "switch", "switch-desktop",
+     "    if [ -t 0 ] && [ -t 1 ]; then\n        read -r -t 60", "    if false; then\n        read -r -t 60"),
+    ("desktop-asked-without-terminal", "switch", "switch-desktop",
+     "    if [ -t 0 ] && [ -t 1 ]; then\n        read -r -t 60", "    if true; then\n        read -r -t 60"),
+    ("desktop-restarted-without-quitting", "switch", "switch-desktop",
+     '    if ! "$DESKTOP_HELPER" quit 9>&-; then', "    if false; then"),
+    ("desktop-not-started-again", "switch", "switch-desktop",
+     '    "$DESKTOP_HELPER" start 9>&- || warn', "    true || warn"),
+    ("desktop-started-only-when-switched", "switch", "switch-desktop",
+     '    "$DESKTOP_HELPER" switch "$account" 9>&- || true\n', '    "$DESKTOP_HELPER" switch "$account" 9>&- || return 0\n'),
+    ("desktop-left-behind-when-already-on", "switch", "switch-desktop",
+     '        web_switch "$file"\n        desktop_switch "$file"\n        return 0\n', '        web_switch "$file"\n        return 0\n'),
+    ("desktop-gets-the-store-lock", "switch", "switch-desktop",
+     '    "$DESKTOP_HELPER" switch "$account" 9>&- || status=$?', '    "$DESKTOP_HELPER" switch "$account" || status=$?'),
+    ("desktop-helper-not-installed", "install", "install",
+     'place "$ROOT/share/desktop.py" "$SHARE/desktop.py" 755\n', ""),
+    # Claude Desktop, desktop.py.
+    ("desktop-open-ignored", "desktop", "desktop",
+     '    if running():\n        raise Refused(RUNNING, "Claude Desktop is open.")\n', ""),
+    ("desktop-started-during-ignored", "desktop", "desktop",
+     "        if running():\n            db.rollback()\n", "        if False:\n            db.rollback()\n"),
+    ("desktop-named-by-last-account-only", "desktop", "desktop",
+     '    for path in sorted(SAVED.glob("*.json")):', "    for path in []:"),
+    ("desktop-unnamed-taken-for-signed-out", "desktop", "desktop",
+     "    raise Refused(UNNAMED, ", "    return None\n    raise Refused(UNNAMED, "),
+    ("desktop-account-not-moved", "desktop", "desktop", "    config[ACCOUNT] = account\n", ""),
+    ("desktop-tokens-stay", "desktop", "desktop", "    for key in TOKENS:\n        config.pop(key, None)\n", ""),
+    ("desktop-cookie-version-ignored", "desktop", "desktop",
+     'copy["cookies"] if copy and copy.get("cookieVersion") == version else []', 'copy["cookies"] if copy else []'),
+    ("desktop-stop-not-deferred", "desktop", "desktop",
+     "        signal.pthread_sigmask(signal.SIG_BLOCK, stops)\n", ""),
+    ("desktop-journal-ignored", "desktop", "desktop",
+     '    if CONFIG.with_name("config.json.journal").exists():', "    if False:"),
+    ("desktop-every-claude-cookie", "desktop", "desktop",
+     "AND name IN ({', '.join('?' * len(SESSION))})\",\n            HOSTS + SESSION)",
+     "AND ?\",\n            HOSTS + (1,))"),
+    ("desktop-env-passed-on", "desktop", "desktop", 'if not key.startswith(("CLAUDE", "ANTHROPIC"))', "if True"),
+    ("desktop-quit-without-waiting", "desktop", "desktop", "    while running() is not None:", "    while False:"),
+    ("desktop-signed-out-named", "desktop", "desktop", "    if key is None:\n        return None\n    for path", "    for path"),
     # The installer.
     ("old-name-kept", "install", "install", '    rm -f "$OLD"\n', "    :\n"),
     ("wrong-extension-id", "install", "install", 'chr(ord("a") + int(c, 16))', 'chr(ord("b") + int(c, 16))'),
@@ -123,6 +164,8 @@ def suite_command(suite, target, path):
         "chrome-host": [sys.executable, "-I", TESTS / "test-chrome-host.py", files["host"]],
         "switch-chrome": [sys.executable, "-I", TESTS / "test-switch-chrome.py", files["switch"], files["host"]],
         "install": ["bash", TESTS / "test-install.sh", files["install"]],
+        "desktop": [sys.executable, "-I", TESTS / "test-desktop.py", files["desktop"]],
+        "switch-desktop": ["bash", TESTS / "test-switch-desktop.sh", files["switch"]],
     }
     return [str(part) for part in commands[suite]]
 

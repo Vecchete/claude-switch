@@ -33,3 +33,5 @@ A refresh killed after claude rotated the login leaves the new one in its folder
 it back first, a switch included, so a switch never puts live a token already used. Sign-in folders
 left by an interrupted `login` are imported after an hour when they are newer than the store, the rest
 goes after a day.
+
+Claude Desktop's own sign-in is not refreshed here, see [desktop.md](desktop.md).

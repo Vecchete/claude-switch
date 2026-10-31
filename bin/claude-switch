@@ -14,7 +14,8 @@
 # the login, not the sign-in: only a new sign-in moves the date a sign-in ends, so that is announced.
 #
 # claude.ai in Chrome follows a switch when the companion in ~/.local/share/claude-switch is installed:
-# its extension swaps the claude.ai session cookies, see chrome-host.py there.
+# its extension swaps the claude.ai session cookies, see chrome-host.py there. Claude Desktop follows too,
+# through desktop.py there, once it is closed.
 
 set -euo pipefail
 shopt -s nullglob
@@ -24,6 +25,7 @@ CREDENTIALS=$HOME/.claude/.credentials.json
 CONFIG=$HOME/.claude.json
 STORE=$HOME/.claude-accounts
 CHROME_HOST=$HOME/.local/share/claude-switch/chrome-host.py
+DESKTOP_HELPER=$HOME/.local/share/claude-switch/desktop.py
 
 # A login with a token in it. claude empties both tokens when the server refuses a refresh.
 SIGNED_IN='.claudeAiOauth.accessToken | type == "string" and length > 0'
@@ -84,7 +86,8 @@ Usage:
 
 A switch changes the account only, wherever you call it. New sessions start on it and running
 sessions move to it at their next request. claude.ai in Chrome follows it too, once the companion
-extension in ~/.local/share/claude-switch/chrome-extension is loaded in Chrome.
+extension in ~/.local/share/claude-switch/chrome-extension is loaded in Chrome. Claude Desktop
+follows it as well: an open Desktop is restarted when you answer yes in a terminal.
 
 Don't use /logout on an account you want to keep: it revokes the login saved here too.
 To forget an account, remove its file in ~/.claude-accounts.
@@ -324,6 +327,36 @@ web_back() {
     [ -z "$live" ] || web_switch "$live"
 }
 
+# Claude Desktop follows the switch, when it is installed. It must be closed for that, so an open one is
+# restarted when the terminal says yes. FILE
+desktop_switch() {
+    local account status=0 answer=""
+    [ -x "$DESKTOP_HELPER" ] || return 0
+    account=$(jq -r '.oauthAccount.accountUuid // empty' "$1")
+    [ -n "$account" ] || return 0
+    "$DESKTOP_HELPER" switch "$account" 9>&- || status=$?
+    [ "$status" -eq 3 ] || return 0
+    if [ -t 0 ] && [ -t 1 ]; then
+        read -r -t 60 -p "Claude Desktop is open. Restart it on $LABEL? Code and Cowork tasks running in it stop. [y/N] " \
+            answer || printf '\n'
+    fi
+    case $answer in
+        y|Y|yes|Yes) ;;
+        *)
+            printf 'Claude Desktop is open, so it stays on its account. Close it and run claude-switch %q to bring it along.\n' \
+                "$LABEL"
+            return 0
+            ;;
+    esac
+    if ! "$DESKTOP_HELPER" quit 9>&-; then
+        warn "Claude Desktop didn't close, it stays on its account."
+        return 0
+    fi
+    # It was open before, so it opens again whatever the switch says.
+    "$DESKTOP_HELPER" switch "$account" 9>&- || true
+    "$DESKTOP_HELPER" start 9>&- || warn "Start Claude Desktop again by hand."
+}
+
 warn_environment() {
     local var
     for var in CLAUDE_CONFIG_DIR ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN; do
@@ -337,6 +370,7 @@ switch_to() {
     if [ "$file" = "$(live_file || true)" ]; then
         printf 'Already on %s.\n' "$LABEL"
         web_switch "$file"
+        desktop_switch "$file"
         return 0
     fi
     if jq -e '.dead' "$file" >/dev/null; then
@@ -355,6 +389,7 @@ switch_to() {
     check_login_keys
     printf 'Switched to %s.\n' "$LABEL"
     web_switch "$file"
+    desktop_switch "$file"
 }
 
 # Signs in beside the store and not in ~/.claude, so the live account changes only on a switch.

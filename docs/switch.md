@@ -33,7 +33,8 @@ Claude Code adds another key to `.credentials.json`, the switch says so, because
    stop never leaves the login of one account under the name of the other.
 5. Claude Code clears some account caches of `~/.claude.json` at its own logout. The switch clears the
    same ones, and Claude Code fetches them again.
-6. claude.ai in Chrome follows, see [chrome.md](chrome.md).
+6. claude.ai in Chrome and Claude Desktop follow, see [chrome.md](chrome.md) and
+   [desktop.md](desktop.md).
 
 A name or an email that matches several accounts is refused, for a switch, a login and a rename.
 
