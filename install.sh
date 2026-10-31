@@ -16,7 +16,7 @@ UNITS=$HOME/.config/systemd/user
 STORE=$HOME/.claude-accounts
 HOST_NAME=com.lucasvecchete.claude_switch
 # The browsers that get the manifest of the native host, the ones installed here.
-BROWSERS=(google-chrome-beta google-chrome chromium)
+BROWSERS=(google-chrome-beta google-chrome)
 
 CHECK=""
 case ${1:-} in
