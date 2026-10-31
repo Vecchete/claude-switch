@@ -58,7 +58,11 @@ MUTANTS = [
      "LOGIN_KEYS='[\"claudeAiOauth\", \"designOauth\", \"cloudSessionsOauth\"]'"),
     ("old-name-in-hints", "switch", "switch", "Add it with: claude-switch login", "Add it with: claude-switch.sh login"),
     ("web-by-organization", "switch", "switch-chrome",
-     ".oauthAccount.accountUuid // empty", ".oauthAccount.organizationUuid // empty"),
+     "    [ -x \"$CHROME_HOST\" ] || return 0\n    account=$(jq -r '.oauthAccount.accountUuid // empty' \"$1\")",
+     "    [ -x \"$CHROME_HOST\" ] || return 0\n    account=$(jq -r '.oauthAccount.organizationUuid // empty' \"$1\")"),
+    ("desktop-by-organization", "switch", "switch-desktop",
+     "    [ -x \"$DESKTOP_HELPER\" ] || return 0\n    account=$(jq -r '.oauthAccount.accountUuid // empty' \"$1\")",
+     "    [ -x \"$DESKTOP_HELPER\" ] || return 0\n    account=$(jq -r '.oauthAccount.organizationUuid // empty' \"$1\")"),
     # The refresh of the accounts that are not live.
     ("env-claude-kept", "switch", "refresh", "            CLAUDE*|ANTHROPIC*) CLEAN_ENV+=", "            ANTHROPIC*) CLEAN_ENV+="),
     ("signins-not-tidied", "switch", "refresh", "    tidy_signins\n    unlock_store\n", "    unlock_store\n"),
