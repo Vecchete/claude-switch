@@ -1,0 +1,64 @@
+# claude-switch
+
+Switches the Claude account of this machine with one command, from any folder. Claude Code and
+claude.ai in Chrome move to the account you pick, and nothing else changes: one
+`~/.claude`, one `~/.claude.json`, the same rules, MCP servers, sessions, settings and history for
+every account.
+
+Linux only, tested on Ubuntu 24.04 with Claude Code 2.1.314 and Chrome Beta 155.
+
+## Install
+
+```bash
+git clone git@github.com:Vecchete/claude-switch.git ~/claude-switch
+~/claude-switch/install.sh
+```
+
+`install.sh` copies the files where they run from and changes nothing else:
+
+| From | To |
+|---|---|
+| `bin/claude-switch` | `~/.local/bin/claude-switch` |
+| `share/chrome-host.py` | `~/.local/share/claude-switch/` |
+| `share/chrome-extension/` | `~/.local/share/claude-switch/chrome-extension/` |
+| `systemd/claude-switch-refresh.*` | `~/.config/systemd/user/`, the timer enabled |
+| the native host manifest, written by `install.sh` | `NativeMessagingHosts` of each Chrome installed |
+
+Run it again after any change in the checkout. `./install.sh --check` says what differs and changes
+nothing. It needs `jq`, `flock`, `python3` and `claude` in the `PATH`.
+
+For claude.ai in Chrome, load the extension once: `chrome://extensions`, Developer mode, Load
+unpacked, `~/.local/share/claude-switch/chrome-extension`.
+
+## Use
+
+```text
+claude-switch                          the prompt: switch, add (a) or rename (r)
+claude-switch NAME                     switch to NAME, a name or an email
+claude-switch list                     the accounts, * marks the active one
+claude-switch login [ACCOUNT]          sign in an account and keep it, or renew ACCOUNT
+claude-switch rename NAME NEW_NAME     rename an account
+claude-switch refresh [--force]        refresh the accounts that are not active (the timer does it)
+```
+
+Add each account once with `claude-switch login`. From then on a switch never asks for a sign-in.
+
+## What a switch moves
+
+- Claude Code: the login keys of `~/.claude/.credentials.json` and `oauthAccount` in `~/.claude.json`.
+  Running sessions move to the new account at their next request.
+- claude.ai in Chrome: the four session cookies, swapped by the companion extension while claude.ai
+  is blocked, then the claude.ai tabs reload.
+
+Everything else stays: MCP logins, settings, projects, sessions, Chrome preferences. Each account
+keeps its own history on claude.ai, and it comes back with the account.
+
+The accounts live in `~/.claude-accounts`, one file per account, readable only by you. They hold
+logins, so they never go in this repository.
+
+## Docs
+
+- [How a switch works](docs/switch.md)
+- [Keeping the other accounts signed in](docs/refresh.md)
+- [claude.ai in Chrome](docs/chrome.md)
+- [Tests](docs/testing.md)

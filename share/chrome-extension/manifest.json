@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Claude account switch",
+  "version": "1.1",
+  "description": "Puts claude.ai on the account claude-switch switches to. It sees claude.ai only.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9joO2q4p9jL3BXmTW2CouXKwrGG71tj8OqREJ+RFuvq5AWfMklWGkmVSetGOQP6Hq5oz7RVdmlIdeQhuG+NvjNHf5p3Xer1+o2Ny5qfRxKU9rqwxycI70TntDIurY5X6Fyk5NRhgHzllXA1TQkP5a0WMZR+BWeBGhtmdTW04A6qWF0l6+grbOTo/KWclYyc9Xy4IOiFdBQuf3eeUk766T5LqrdvB498NHS/g0nA5KGH7h2YLRRmxep3lVlLhD2PjuiXWBtCRyjWPAGg9czTbJN1ZYjRWW5EqjWAti0A7vK/MDbKpf+3ERJIFehPyhONcqidKn+O3BuhUShRkkjGuwIDAQAB",
+  "permissions": ["cookies", "nativeMessaging", "alarms", "declarativeNetRequest"],
+  "host_permissions": ["https://claude.ai/*", "https://*.claude.ai/*"],
+  "background": {
+    "service_worker": "worker.js"
+  }
+}

@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh the logins of the Claude Code accounts that are not active
+Documentation=https://github.com/Vecchete/claude-switch
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -lc '%h/.local/bin/claude-switch refresh'
+TimeoutStartSec=900
+Nice=10
+# A stop reaches the script only: it lets the claude it runs finish, then keeps the rotated login.
+KillMode=mixed

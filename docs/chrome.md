@@ -1,0 +1,47 @@
+# claude.ai in Chrome
+
+claude.ai keeps the account in four cookies: `sessionKey`, `sessionKeyLC`, `routingHint` and
+`lastActiveOrg`. The companion swaps those four on every switch, so claude.ai in Chrome follows without
+a sign-in and keeps the page settings of the browser.
+
+## The parts
+
+- The extension, `share/chrome-extension` (Manifest V3: `cookies`, `nativeMessaging`, `alarms`,
+  `declarativeNetRequest`, claude.ai only). Its key fixes the id `klclebpiaondgkoelekdoimhcboaenal`.
+- The native host, `share/chrome-host.py`. Chrome starts it, and `claude-switch` reaches it through the
+  socket `~/.claude-accounts/.chrome.sock`.
+- The saved sessions, `~/.claude-accounts/.web/<accountUuid>.json`, mode 600.
+
+## A swap
+
+1. The host names the open session: its `sessionKey` among the saved ones, else `GET
+   https://claude.ai/api/account` with those cookies, the only place they are sent. Only a 401 or 403
+   in JSON with `error.details.error_code` `account_session_invalid` means signed out. A Cloudflare
+   page, another refusal, a 5xx or no network means nobody can tell, and nothing changes.
+2. The extension blocks every claude.ai request with a session rule and waits a second. A page that
+   sends half a swapped session gets it revoked (seen on 2026-10-30).
+3. The four cookies are read. When the `sessionKey` changed in the meantime, the swap stops.
+4. The open session is saved under its account, the saved one of the target goes in with `sessionKey`
+   last, and the result is checked.
+5. claude.ai is unblocked and its tabs reload. A host that stops halfway lifts the block at its next
+   start.
+
+Nobody logs out, so every saved session stays valid on the server. A web session lasts 28 days from
+the last activity on claude.ai. A saved session that expired is dropped, and claude.ai asks for one
+sign-in.
+
+When Chrome is closed, the switch is left in `~/.claude-accounts/.chrome-pending` and the host applies
+it when Chrome starts, retried every 30 seconds for 10 minutes. A newer switch replaces it.
+
+`~/.local/share/claude-switch/chrome-host.py --status` prints the account open in Chrome and the
+saved ones.
+
+## Limits
+
+- One Chrome profile follows at a time. A second profile that loads the extension takes the switch
+  over.
+- The Claude in Chrome extension keeps its own login and can't be switched from outside. When its
+  account changes it deletes its scheduled tasks, so it is left alone.
+- A change to `chrome-host.py` reaches Chrome when the running host stops: `install.sh` stops it, and
+  the extension starts the new one within 10 seconds. A change to the extension needs Reload in
+  `chrome://extensions`, or a Chrome restart.

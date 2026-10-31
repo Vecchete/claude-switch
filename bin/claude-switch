@@ -1,0 +1,750 @@
+#!/usr/bin/env bash
+# Switches the Claude Code account of the whole machine, from any folder.
+#
+# Only the account changes: the login in ~/.claude/.credentials.json and the account in
+# ~/.claude.json. There is one ~/.claude, so the configuration, rules, MCP servers and their logins,
+# sessions and memory stay as they are. Never use CLAUDE_CONFIG_DIR for this: it splits all of that,
+# the rules load twice and dev-ai only syncs ~/.claude.
+#
+# Each account is one file in ~/.claude-accounts. It holds the login, so only you can read it.
+#
+# The accounts that are not active stay signed in through `claude-switch refresh`, which the
+# claude-switch-refresh timer runs at boot and every 4 hours. claude refreshes each of them in a
+# folder of its own where no session runs, and the rotated login comes back to its file. That renews
+# the login, not the sign-in: only a new sign-in moves the date a sign-in ends, so that is announced.
+#
+# claude.ai in Chrome follows a switch when the companion in ~/.local/share/claude-switch is installed:
+# its extension swaps the claude.ai session cookies, see chrome-host.py there.
+
+set -euo pipefail
+shopt -s nullglob
+umask 077
+
+CREDENTIALS=$HOME/.claude/.credentials.json
+CONFIG=$HOME/.claude.json
+STORE=$HOME/.claude-accounts
+CHROME_HOST=$HOME/.local/share/claude-switch/chrome-host.py
+
+# A login with a token in it. claude empties both tokens when the server refuses a refresh.
+SIGNED_IN='.claudeAiOauth.accessToken | type == "string" and length > 0'
+
+# What belongs to the account in .credentials.json: what claude's own logout deletes with the login
+# (2.1.314). mcpOAuth and the rest never move.
+LOGIN_KEYS='["claudeAiOauth", "designOauth", "cloudSessionsOauth", "organizationUuid", "trustedDeviceToken",
+    "trustedDeviceEnrolledAfterRefusalAtMs", "enterpriseGateway"]'
+PICK_LOGIN="with_entries(select((.key | IN($LOGIN_KEYS[])) and .value != null))"
+DROP_LOGIN="with_entries(select(.key | IN($LOGIN_KEYS[]) | not))"
+
+# What claude itself clears in .claude.json when the account changes. It fetches them again.
+DROP_CACHES='del(.managedSettingsNoticeSeenOrg, .additionalModelOptionsCache,
+    .additionalModelOptionsAnsweredAt, .additionalModelCostsCache, .modelAccessCache,
+    .orgModelDefaultCache, .cachedArtifactRoster, .artifactRosterDenied, .lastSeenOrgDefaultUpdatedAt,
+    .clientDataCache, .clientDataCacheSlots, .autoCompactWindowsCache, .cachedUsageUtilization,
+    .metricsStatusCache, .metricsStatusCacheByPrincipal, .githubWebConnectionStatusCache,
+    .unusedLimitResetStatusCache, .startupPrefetchedAt)'
+
+# A stored access token with less than this left is refreshed. The timer runs every 4 hours.
+REFRESH_AHEAD_MS=$((270 * 60 * 1000))
+# A sign-in that ends within this is announced.
+WARN_AHEAD_MS=$((3 * 24 * 3600 * 1000))
+
+LOCKS=()
+SIGNIN=""
+STUB=""
+DEAD=0
+# Set while claude.ai in Chrome is on the account of a sign-in rather than on the live one.
+WEB_AWAY=""
+
+cleanup() {
+    [ -z "$STUB" ] || finish_stub "$STUB" || true
+    release_locks
+    [ -z "$SIGNIN" ] || rm -rf "$SIGNIN"
+    rm -f "$CREDENTIALS.switch" "$CONFIG.switch"
+    [ -z "$WEB_AWAY" ] || web_back
+}
+trap cleanup EXIT
+# systemd stops the service with a TERM: exit through cleanup, which keeps a login already rotated.
+trap 'exit 143' TERM INT HUP
+
+usage() {
+    cat <<'EOF'
+Usage:
+  claude-switch                          Prompt to switch, add or rename.
+  claude-switch NAME                     Switch the whole machine to NAME, a name or an email.
+  claude-switch list                     Print the accounts. * marks the active one.
+  claude-switch login [ACCOUNT] [OPTIONS]
+                                         Sign in an account and keep it here. It doesn't switch.
+                                         With ACCOUNT, a name or an email already here, it renews
+                                         that one: claude.ai in Chrome goes to it first and the sign-in
+                                         page asks for its email. OPTIONS go to claude auth login.
+  claude-switch rename NAME NEW_NAME     Rename an account.
+  claude-switch refresh [--force]        Refresh the login of the accounts that are not active.
+                                         The claude-switch-refresh timer runs it at boot and every
+                                         4 hours. --force refreshes them even when not due.
+
+A switch changes the account only, wherever you call it. New sessions start on it and running
+sessions move to it at their next request. claude.ai in Chrome follows it too, once the companion
+extension in ~/.local/share/claude-switch/chrome-extension is loaded in Chrome.
+
+Don't use /logout on an account you want to keep: it revokes the login saved here too.
+To forget an account, remove its file in ~/.claude-accounts.
+EOF
+}
+
+die() {
+    printf 'claude-switch: %s\n' "$*" >&2
+    exit 1
+}
+
+warn() {
+    printf 'claude-switch: %s\n' "$*" >&2
+}
+
+trim() {
+    local text=$1
+    text=${text#"${text%%[![:space:]]*}"}
+    printf '%s' "${text%"${text##*[![:space:]]}"}"
+}
+
+# The file of the account in a .claude.json. Fails when it holds no account.
+account_file() {
+    local id
+    id=$(jq -er '.oauthAccount | select(.emailAddress != null)
+        | "\(.emailAddress)_\(.organizationUuid // "none" | .[0:8])" | gsub("[^[:alnum:]@._-]"; "_")' "$1" 2>/dev/null) || return 1
+    printf '%s/%s.json\n' "$STORE" "$id"
+}
+
+# The file of the live account. Fails when nobody is signed in.
+live_file() {
+    jq -e "$SIGNED_IN" "$CREDENTIALS" >/dev/null 2>&1 || return 1
+    account_file "$CONFIG"
+}
+
+# The name stays when the file exists. CREDENTIALS CONFIG FILE
+store_account() {
+    local name=""
+    mkdir -p "$STORE"
+    chmod 700 "$STORE"
+    [ ! -f "$3" ] || name=$(jq -r '.name' "$3")
+    jq -n --arg name "$name" --slurpfile credentials "$1" --slurpfile config "$2" \
+        "{name: \$name, login: (\$credentials[0] | $PICK_LOGIN), oauthAccount: \$config[0].oauthAccount}" > "$3.tmp"
+    mv "$3.tmp" "$3"
+}
+
+# The stored account, other than FILE, whose tokens are the live ones. Two accounts never share a token.
+holder_of_live() {
+    local live other
+    live=$(fingerprint "$CREDENTIALS" "")
+    for other in "$STORE"/*.json; do
+        if [ "$other" != "$1" ] && [ "$(fingerprint "$other" .login)" = "$live" ]; then
+            printf '%s\n' "$other"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Refresh tokens rotate, so the live login is saved before anything replaces it.
+save_live() {
+    local file
+    file=$(live_file) || return 0
+    store_account "$CREDENTIALS" "$CONFIG" "$file"
+}
+
+# A switch cut between its two renames, by a kill or a power cut, leaves the login of one account under
+# the name of the other. Every command completes it before it saves the live login.
+repair_live() {
+    local file other
+    file=$(live_file) || return 0
+    other=$(holder_of_live "$file") || return 0
+    lock_live
+    apply_account "$other"
+    release_locks
+    read_account "$other"
+    warn "A switch to $LABEL had been cut short, it is completed."
+}
+
+# NAME, EMAIL, PLAN and ENDS, the date the sign-in ends or "signed out". An empty name must stay a
+# field, so no tab.
+read_account() {
+    IFS=$'\x1f' read -r NAME EMAIL PLAN ENDS < <(jq -r '[.name, .oauthAccount.emailAddress,
+        (.login.claudeAiOauth.subscriptionType // "-"),
+        (if .dead then "signed out" else ((.login.claudeAiOauth.refreshTokenExpiresAt // 0) / 1000 | floor
+            | if . > 0 then strftime("%d/%m/%Y") else "-" end) end)] | join("\u001f")' "$1")
+    LABEL=${NAME:-$EMAIL}
+}
+
+# The file of the account called NAME, by name or email. Fails with 1 when none is, 2 when several are.
+find_account() {
+    local file found=()
+    for file in "$STORE"/*.json; do
+        if jq -e --arg who "$1" '.name == $who or .oauthAccount.emailAddress == $who' "$file" >/dev/null; then
+            found+=("$file")
+        fi
+    done
+    [ "${#found[@]}" -gt 0 ] || return 1
+    [ "${#found[@]}" -eq 1 ] || return 2
+    printf '%s\n' "${found[0]}"
+}
+
+# The same, or the reason it can't be chosen and an exit. NAME
+require_account() {
+    local status=0
+    find_account "$1" || status=$?
+    case $status in
+        0) ;;
+        2) die "Several accounts match $1. Name them in the prompt (r) and use the name." ;;
+        *) die "No account called $1. Add it with: claude-switch login" ;;
+    esac
+}
+
+# Prints what is wrong with a name for FILE, nothing when it's fine. NAME [FILE]
+name_problem() {
+    local other status=0
+    case $1 in
+        ""|-*|*[[:cntrl:]]*)
+            printf 'A name must not be empty, start with - or hold control characters.'
+            return 0
+            ;;
+        list|login|rename|refresh|help)
+            printf '%s is a command of this script, choose another name.' "$1"
+            return 0
+            ;;
+        *[!0-9]*) ;;
+        *)
+            printf '%s can only be a number in the list, the prompt selects by number.' "$1"
+            return 0
+            ;;
+    esac
+    other=$(find_account "$1") || status=$?
+    if [ "$status" -eq 2 ] || { [ "$status" -eq 0 ] && [ "$other" != "${2:-}" ]; }; then
+        printf 'Another account is already called %s.' "$1"
+    fi
+}
+
+set_name() {
+    jq --arg name "$2" '.name = $name' "$1" > "$1.tmp"
+    mv "$1.tmp" "$1"
+}
+
+# One switch, sign-in or refresh at a time on the store. A refresh holds it while its folder has the
+# login, so a switch never puts live a token that is being rotated.
+lock_store() {
+    mkdir -p "$STORE"
+    chmod 700 "$STORE"
+    exec 9>>"$STORE/.lock"
+    if ! flock -n 9; then
+        warn "Waiting for the background refresh of an account..."
+        flock -w 300 9 || die "The accounts stayed locked for 5 minutes, nothing changed."
+    fi
+}
+
+unlock_store() {
+    exec 9>&-
+}
+
+# The locks claude takes itself, with mkdir. A holder touches its lock every 5 seconds, so one older
+# than 15 is dead: claude auth status leaves them behind. Without these locks a session in the middle
+# of a write brings the previous account back.
+take_lock() {
+    local path=$1 tries=0
+    until mkdir "$path" 2>/dev/null; do
+        if [ -n "$(find "$path" -maxdepth 0 -mmin +0.25 2>/dev/null)" ]; then
+            rmdir "$path" 2>/dev/null || true
+            continue
+        fi
+        tries=$((tries + 1))
+        [ "$tries" -lt 200 ] || die "A running session holds $path, nothing changed. Try again."
+        sleep 0.1
+    done
+    LOCKS+=("$path")
+}
+
+release_locks() {
+    [ "${#LOCKS[@]}" -eq 0 ] || rmdir "${LOCKS[@]}" 2>/dev/null || true
+    LOCKS=()
+}
+
+lock_live() {
+    take_lock "$HOME/.claude/.oauth_refresh.lock"
+    take_lock "$HOME/.claude.lock"
+    take_lock "$CONFIG.lock"
+}
+
+# Puts FILE in place of the live login. Nothing but the account changes. Both files are written aside
+# first and renamed after, since running sessions read them at any moment: a failure on the way leaves
+# the previous account whole, never half a switch.
+apply_account() {
+    local stopped=""
+    [ -f "$CREDENTIALS" ] || printf '{}\n' > "$CREDENTIALS"
+    [ -f "$CONFIG" ] || printf '{}\n' > "$CONFIG"
+    jq --slurpfile account "$1" "$DROP_LOGIN + \$account[0].login" "$CREDENTIALS" > "$CREDENTIALS.switch"
+    jq --slurpfile account "$1" "$DROP_CACHES | .oauthAccount = \$account[0].oauthAccount" "$CONFIG" > "$CONFIG.switch"
+    # A stop between the renames would leave the login of one account under the name of the other, so
+    # it waits until both are done.
+    trap 'stopped=1' TERM INT HUP
+    mv "$CREDENTIALS.switch" "$CREDENTIALS"
+    mv "$CONFIG.switch" "$CONFIG"
+    trap 'exit 143' TERM INT HUP
+    [ -z "$stopped" ] || exit 143
+}
+
+# A login a later claude keeps under a new key would stay behind on a switch, so it is announced.
+check_login_keys() {
+    local unknown
+    unknown=$(jq -r "keys - [\"mcpOAuth\"] - $LOGIN_KEYS | join(\", \")" "$CREDENTIALS" 2>/dev/null || true)
+    [ -z "$unknown" ] || warn "~/.claude/.credentials.json also holds $unknown, which a switch does not move."
+}
+
+# The variables a calling Claude Code session or an API key would pass on to claude, as env -u options.
+claude_env() {
+    local var
+    CLEAN_ENV=()
+    for var in $(compgen -e); do
+        case $var in
+            CLAUDE*|ANTHROPIC*) CLEAN_ENV+=(-u "$var") ;;
+        esac
+    done
+}
+
+# claude.ai in Chrome follows the switch, when the Chrome companion is installed. FILE
+web_switch() {
+    local account
+    [ -x "$CHROME_HOST" ] || return 0
+    account=$(jq -r '.oauthAccount.accountUuid // empty' "$1")
+    [ -n "$account" ] || return 0
+    "$CHROME_HOST" --switch "$account" 9>&- || warn "Switch claude.ai in Chrome by hand this time."
+}
+
+# claude.ai in Chrome back on the account Claude Code is on.
+web_back() {
+    local live
+    WEB_AWAY=""
+    live=$(live_file || true)
+    [ -z "$live" ] || web_switch "$live"
+}
+
+warn_environment() {
+    local var
+    for var in CLAUDE_CONFIG_DIR ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN; do
+        [ -z "${!var:-}" ] || warn "$var is set in this shell, a claude started from here doesn't follow the switch."
+    done
+}
+
+switch_to() {
+    local file=$1 ends
+    read_account "$file"
+    if [ "$file" = "$(live_file || true)" ]; then
+        printf 'Already on %s.\n' "$LABEL"
+        web_switch "$file"
+        return 0
+    fi
+    if jq -e '.dead' "$file" >/dev/null; then
+        die "$LABEL was signed out, nothing changed. Sign in again: claude-switch login"
+    fi
+    ends=$(jq -r '.login.claudeAiOauth.refreshTokenExpiresAt // 0' "$file")
+    if [ "$ends" -gt 0 ] && [ "$ends" -lt "$(date +%s%3N)" ]; then
+        die "The login of $LABEL ended on $ENDS, nothing changed. Sign in again: claude-switch login"
+    fi
+    lock_live
+    save_live
+    apply_account "$file"
+    release_locks
+    [ "$(live_file || true)" = "$file" ] || die "A running session wrote over the switch. Run it again."
+    warn_environment
+    check_login_keys
+    printf 'Switched to %s.\n' "$LABEL"
+    web_switch "$file"
+}
+
+# Signs in beside the store and not in ~/.claude, so the live account changes only on a switch.
+# No session ever runs from this folder, it's gone when this ends.
+cmd_login() {
+    local file known="" answer problem wanted="" wanted_email=""
+    if [ $# -ge 1 ] && [ "${1#-}" = "$1" ]; then
+        wanted=$(require_account "$1") || exit 1
+        shift
+        read_account "$wanted"
+        wanted_email=$EMAIL
+        # The sign-in page uses the claude.ai session of the browser, so that session goes first. It
+        # comes back however the sign-in ends.
+        WEB_AWAY=yes
+        web_switch "$wanted"
+        set -- --email "$wanted_email" "$@"
+    fi
+    mkdir -p "$STORE"
+    chmod 700 "$STORE"
+    SIGNIN=$(mktemp -d "$STORE/.signin.XXXXXX")
+    printf 'If the browser offers an account you already use here, switch it there or open the link in a private window.\n'
+    claude_env
+    env "${CLEAN_ENV[@]}" CLAUDE_CONFIG_DIR="$SIGNIN" claude auth login "$@" || die "The sign-in failed, nothing changed."
+    jq -e "$SIGNED_IN" "$SIGNIN/.credentials.json" >/dev/null 2>&1 \
+        && file=$(account_file "$SIGNIN/.claude.json") \
+        || die "The sign-in returned, but it left no Claude login. Nothing changed."
+    lock_store
+    [ ! -f "$file" ] || known=yes
+    store_account "$SIGNIN/.credentials.json" "$SIGNIN/.claude.json" "$file"
+    read_account "$file"
+    if [ -n "$wanted" ] && [ "$file" != "$wanted" ]; then
+        warn "The browser signed in $EMAIL, not $wanted_email. $EMAIL is kept, $wanted_email is unchanged."
+    fi
+    [ -z "$WEB_AWAY" ] || web_back
+    if [ -n "$known" ]; then
+        if [ "$file" = "$(live_file || true)" ]; then
+            lock_live
+            apply_account "$file"
+            release_locks
+        fi
+        printf '%s was already here, its login is renewed.\n' "$LABEL"
+        return 0
+    fi
+    unlock_store
+    if [ -t 0 ]; then
+        while read -r -p "Name for this account (Enter to keep $EMAIL): " answer; do
+            answer=$(trim "$answer")
+            [ -n "$answer" ] || break
+            problem=$(name_problem "$answer" "$file")
+            if [ -z "$problem" ]; then
+                lock_store
+                set_name "$file" "$answer"
+                unlock_store
+                break
+            fi
+            printf '%s\n' "$problem"
+        done
+        read_account "$file"
+    fi
+    printf 'Added %s. Switch to it with: claude-switch %q\n' "$LABEL" "$LABEL"
+}
+
+rename_account() {
+    local new problem
+    new=$(trim "$2")
+    problem=$(name_problem "$new" "$1")
+    [ -z "$problem" ] || die "$problem"
+    read_account "$1"
+    set_name "$1" "$new"
+    printf 'Renamed %s to %s.\n' "$LABEL" "$new"
+}
+
+hours() {
+    printf '%d.%dh' $(($1 / 3600000)) $(($1 % 3600000 / 360000))
+}
+
+# A fingerprint of the tokens of every grant under PATH in FILE, never the tokens themselves. FILE PATH
+fingerprint() {
+    jq -c "[$2.claudeAiOauth, $2.designOauth, $2.cloudSessionsOauth] | map(.accessToken, .refreshToken)" "$1" \
+        | md5sum | cut -d' ' -f1
+}
+
+# True when claude changed the tokens in STUB.
+stub_moved() {
+    [ "$(fingerprint "$1/.credentials.json" "" 2>/dev/null)" != "$(cat "$1/.base" 2>/dev/null)" ]
+}
+
+# A desktop notification, once a day for each KEY. One that could not be shown, at boot before the
+# desktop is up for instance, is tried again on the next run. KEY TITLE BODY
+notify_once() {
+    local today
+    today=$(date +%F)
+    if grep -qxF "$1 $today" "$STORE/.notified" 2>/dev/null; then
+        return 0
+    fi
+    command -v notify-send >/dev/null || return 0
+    notify-send --app-name="Claude accounts" "$2" "$3" 9>&- 2>/dev/null || return 0
+    { grep " $today\$" "$STORE/.notified" 2>/dev/null || true; printf '%s %s\n' "$1" "$today"; } > "$STORE/.notified.tmp"
+    mv "$STORE/.notified.tmp" "$STORE/.notified"
+}
+
+# Runs claude on the folder STUB alone, never on ~/.claude: no update, no extra traffic, no
+# connectors, and nothing of a calling Claude Code session or an API key in place of the login.
+# STUB SECONDS ARGS...
+stub_claude() {
+    local stub=$1 seconds=$2
+    shift 2
+    claude_env
+    (cd "$stub" && exec env "${CLEAN_ENV[@]}" CLAUDE_CONFIG_DIR="$stub" DISABLE_AUTOUPDATER=1 \
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 ENABLE_CLAUDEAI_MCP_SERVERS=false \
+        timeout --foreground "$seconds" claude "$@") </dev/null >> "$stub/.out" 2>&1 9>&- || true
+}
+
+# Brings the login claude left in STUB back to its account, or says why not. Only while the account
+# still holds the tokens STUB started from: a folder left by a killed run may be older than the store.
+finish_stub() {
+    local stub=$1 file account
+    [ -d "$stub" ] || return 0
+    file=$STORE/$(cat "$stub/.account" 2>/dev/null || true)
+    if [ ! -f "$file" ] || [ "$(fingerprint "$file" .login)" != "$(cat "$stub/.base" 2>/dev/null)" ]; then
+        rm -rf "$stub"
+        return 0
+    fi
+    read_account "$file"
+    if ! jq -e '.claudeAiOauth' "$stub/.credentials.json" >/dev/null 2>&1; then
+        printf '%s: not refreshed, claude left no login\n' "$LABEL"
+    elif jq -e '.claudeAiOauth | (.accessToken // "") == "" or (.refreshToken // "") == ""' \
+        "$stub/.credentials.json" >/dev/null; then
+        # claude empties the tokens when the server refuses the refresh. Only a new sign-in helps.
+        jq --arg when "$(date +%d/%m/%Y)" '.dead = $when' "$file" > "$file.tmp"
+        mv "$file.tmp" "$file"
+        printf '%s: the login was refused, sign in again: claude-switch login\n' "$LABEL"
+        notify_once "dead:${file##*/}" "Claude account $LABEL is signed out" "Sign in again: claude-switch login"
+        DEAD=1
+    elif ! stub_moved "$stub"; then
+        printf '%s: not refreshed this time: %s\n' "$LABEL" "$(grep -v '^{' "$stub/.out" 2>/dev/null | head -1 || true)"
+    else
+        account=$(jq -c '.oauthAccount // null' "$stub/.claude.json" 2>/dev/null || echo null)
+        jq --slurpfile credentials "$stub/.credentials.json" --argjson account "$account" \
+            ".login = (\$credentials[0] | $PICK_LOGIN)
+            | if \$account.accountUuid == .oauthAccount.accountUuid then .oauthAccount = \$account else . end" \
+            "$file" > "$file.tmp"
+        mv "$file.tmp" "$file"
+        printf '%s: refreshed, access token good for %s\n' "$LABEL" \
+            "$(hours $(( $(jq -r '.login.claudeAiOauth.expiresAt' "$file") - $(date +%s%3N) )))"
+    fi
+    rm -rf "$stub"
+}
+
+# Refreshes FILE in a folder of its own. FILE FORCE
+refresh_account() {
+    local file=$1 force=$2 now expires ends
+    read_account "$file"
+    if jq -e '.dead' "$file" >/dev/null; then
+        printf '%s: signed out, sign in again: claude-switch login\n' "$LABEL"
+        notify_once "dead:${file##*/}" "Claude account $LABEL is signed out" "Sign in again: claude-switch login"
+        DEAD=1
+        return 0
+    fi
+    now=$(date +%s%3N)
+    ends=$(jq -r '.login.claudeAiOauth.refreshTokenExpiresAt // 0' "$file")
+    if [ "$ends" -gt 0 ] && [ "$ends" -lt "$now" ]; then
+        printf '%s: the sign-in ended on %s, sign in again: claude-switch login\n' "$LABEL" "$ENDS"
+        DEAD=1
+        return 0
+    fi
+    expires=$(jq -r '.login.claudeAiOauth.expiresAt // 0' "$file")
+    if [ "$force" = no ] && [ $((expires - now)) -gt "$REFRESH_AHEAD_MS" ]; then
+        printf '%s: access token good for %s, nothing to do\n' "$LABEL" "$(hours $((expires - now)))"
+        return 0
+    fi
+    STUB=$(mktemp -d "$STORE/.refresh.XXXXXX")
+    printf '%s\n' "${file##*/}" > "$STUB/.account"
+    fingerprint "$file" .login > "$STUB/.base"
+    # An access token in the past makes claude refresh it first thing.
+    jq --argjson past $((now - 60000)) ".login | $PICK_LOGIN | .claudeAiOauth.expiresAt = \$past" "$file" \
+        > "$STUB/.credentials.json"
+    jq '{oauthAccount, hasCompletedOnboarding: true}' "$file" > "$STUB/.claude.json"
+    # claude auth status refreshes an expired login without a model request. The cheapest model is
+    # the fallback, for a version where it no longer does.
+    # Offline, claude retries without end: the timeouts keep a switch from waiting on it for long.
+    stub_claude "$STUB" 60 auth status
+    if ! stub_moved "$STUB"; then
+        stub_claude "$STUB" 60 -p --model haiku --tools "" --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
+            --setting-sources local --no-session-persistence "Reply with exactly: OK"
+    fi
+    finish_stub "$STUB"
+    STUB=""
+}
+
+# Only a new sign-in moves the date a sign-in ends, so that date is announced ahead.
+check_deadline() {
+    local file=$1 ends
+    if jq -e '.dead' "$file" >/dev/null; then
+        return 0
+    fi
+    ends=$(jq -r '.login.claudeAiOauth.refreshTokenExpiresAt // 0' "$file")
+    if [ "$ends" -le 0 ] || [ $((ends - $(date +%s%3N))) -ge "$WARN_AHEAD_MS" ]; then
+        return 0
+    fi
+    read_account "$file"
+    printf '%s: the sign-in ends on %s, sign in again before then: claude-switch login\n' "$LABEL" "$ENDS"
+    notify_once "ends:${file##*/}" "Claude sign-in of $LABEL ends on $ENDS" \
+        "Sign in again before then: claude-switch login"
+}
+
+# A refresh killed once claude rotated a login leaves the new one in its folder, and the store's copy is
+# used up. Every command brings it back first, a switch included.
+recover_refreshes() {
+    local stub
+    for stub in "$STORE"/.refresh.*/; do
+        finish_stub "${stub%/}"
+    done
+}
+
+# Sign-in folders that outlived their sign-in, a killed or abandoned `login`: a finished one newer than
+# the stored login of its account is kept, the rest goes. One younger than an hour may still be running.
+tidy_signins() {
+    local dir file ends stored
+    for dir in "$STORE"/.signin.*/; do
+        dir=${dir%/}
+        [ -n "$(find "$dir" -maxdepth 0 -mmin +60 2>/dev/null)" ] || continue
+        if jq -e "$SIGNED_IN" "$dir/.credentials.json" >/dev/null 2>&1 \
+            && file=$(account_file "$dir/.claude.json"); then
+            ends=$(jq -r '.claudeAiOauth.refreshTokenExpiresAt // 0' "$dir/.credentials.json")
+            stored=$(jq -r '.login.claudeAiOauth.refreshTokenExpiresAt // 0' "$file" 2>/dev/null || echo 0)
+            if [ "$ends" -gt "$stored" ]; then
+                store_account "$dir/.credentials.json" "$dir/.claude.json" "$file"
+                if [ "$file" = "$(live_file || true)" ]; then
+                    lock_live
+                    apply_account "$file"
+                    release_locks
+                fi
+                read_account "$file"
+                printf '%s: kept the sign-in an interrupted login left behind\n' "$LABEL"
+            fi
+            rm -rf "$dir"
+        elif [ -n "$(find "$dir" -maxdepth 0 -mmin +1440 2>/dev/null)" ]; then
+            rm -rf "$dir"
+        fi
+    done
+}
+
+# Refreshes the login of every account that is not live, and announces the sign-ins that end soon.
+cmd_refresh() {
+    local force=no file live
+    case ${1:-} in
+        "") ;;
+        --force) force=yes ;;
+        *) die "Usage: claude-switch refresh [--force]" ;;
+    esac
+    lock_store
+    recover_refreshes
+    tidy_signins
+    unlock_store
+    for file in "$STORE"/*.json; do
+        lock_store
+        live=$(live_file || true)
+        # The live login belongs to the running sessions, its stored copy is older than theirs.
+        if [ "$file" != "$live" ]; then
+            refresh_account "$file" "$force"
+        fi
+        check_deadline "$file"
+        unlock_store
+    done
+    [ "$DEAD" -eq 0 ]
+}
+
+cmd_list() {
+    local file live marker
+    live=$(live_file || true)
+    printf '  %-28s %-36s %-6s %s\n' ACCOUNT EMAIL PLAN UNTIL
+    for file in "$STORE"/*.json; do
+        read_account "$file"
+        marker=" "
+        [ "$file" != "$live" ] || marker="*"
+        printf '%s %-28s %-36s %-6s %s\n' "$marker" "$LABEL" "$EMAIL" "$PLAN" "$ENDS"
+    done
+}
+
+# True when TEXT is the number of a row. TEXT ROWS
+is_row() {
+    [[ $1 =~ ^[1-9][0-9]{0,2}$ ]] && [ "$1" -le "$2" ]
+}
+
+prompt_rename() {
+    local row=1 new
+    if [ "${#files[@]}" -gt 1 ]; then
+        read -r -p 'Rename which one (number)? ' row || return 0
+        [ -n "$row" ] || return 0
+        if ! is_row "$row" "${#files[@]}"; then
+            printf 'There is no account %s.\n' "$row"
+            return 0
+        fi
+    fi
+    read -r -p 'New name (Enter to keep it): ' new || return 0
+    [ -n "$(trim "$new")" ] || return 0
+    (lock_store && rename_account "${files[row - 1]}" "$new") || true
+}
+
+cmd_prompt() {
+    local files file live shown here choice row when
+    while :; do
+        lock_store
+        save_live
+        unlock_store
+        live=$(live_file || true)
+        files=("$STORE"/*.json)
+        row=0
+        printf '\nClaude Code accounts\n\n'
+        for file in "${files[@]}"; do
+            row=$((row + 1))
+            read_account "$file"
+            shown=$LABEL
+            [ "$LABEL" = "$EMAIL" ] || shown="$LABEL  $EMAIL"
+            when="until $ENDS"
+            [ "$ENDS" != "signed out" ] || when=$ENDS
+            here=""
+            [ "$file" != "$live" ] || here="active"
+            printf '  %2d) %-56s %-6s %-17s %s\n' "$row" "$shown" "$PLAN" "$when" "$here"
+        done
+        printf '\n   a) Add an account\n   r) Rename an account\n   q) Quit\n\n'
+        if ! read -r -p 'Select an account to switch to: ' choice; then
+            printf '\n'
+            return 0
+        fi
+        case $choice in
+            q|Q) return 0 ;;
+            a|A) bash "$0" login || true ;;
+            r|R) prompt_rename ;;
+            *)
+                if is_row "$choice" "${#files[@]}"; then
+                    lock_store
+                    switch_to "${files[choice - 1]}"
+                    return 0
+                fi
+                printf 'Type a number from the list, a, r or q.\n'
+                ;;
+        esac
+    done
+}
+
+case ${1:-} in
+    help|-h|--help)
+        usage
+        exit 0
+        ;;
+    -*)
+        usage >&2
+        exit 2
+        ;;
+esac
+
+command -v jq >/dev/null || die "jq is required."
+command -v flock >/dev/null || die "flock is required."
+command -v claude >/dev/null || die "claude is not in the PATH."
+
+lock_store
+recover_refreshes
+repair_live
+save_live
+
+case ${1:-} in
+    "")
+        if [ -t 0 ] && [ -t 1 ]; then
+            unlock_store
+            cmd_prompt
+        else
+            cmd_list
+        fi
+        ;;
+    list) cmd_list ;;
+    login)
+        shift
+        unlock_store
+        cmd_login "$@"
+        ;;
+    refresh)
+        shift
+        unlock_store
+        cmd_refresh "$@"
+        ;;
+    rename)
+        [ $# -eq 3 ] || die "Usage: claude-switch rename NAME NEW_NAME"
+        file=$(require_account "$2") || exit 1
+        rename_account "$file" "$3"
+        ;;
+    *)
+        [ $# -eq 1 ] || die "Usage: claude-switch NAME"
+        file=$(require_account "$1") || exit 1
+        switch_to "$file"
+        ;;
+esac
