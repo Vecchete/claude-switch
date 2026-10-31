@@ -9,7 +9,7 @@ server. While the cookies are swapped the extension blocks claude.ai, because a 
 swapped session gets it revoked (seen 2026-10-30: account_session_invalid).
 
 A session belongs to an account, the accountUuid claude-switch keeps, and stays the same when the
-account moves to another of its organizations on claude.ai. The open session is recognised among the
+account moves to another of its organizations on claude.ai. The open session is recognized among the
 saved ones, or else by claude.ai's /api/account, the only place it is sent. When neither can tell,
 nothing changes: a session nobody can name is never saved over another or thrown away.
 

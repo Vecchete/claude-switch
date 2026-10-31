@@ -228,7 +228,7 @@ try:
     check("back: switched", "switched to a@example.com" in result.stdout and names(jar).get("sessionKey") == "session-a")
     check("back: B saved under its account", names(saved(store, ACCOUNT_B)["cookies"]).get("lastActiveOrg") == ORG_B2)
 
-    # claude.ai down: a session saved before is still recognised.
+    # claude.ai down: a session saved before is still recognized.
     ClaudeAi.up = False
     result = client(home, "--switch", ACCOUNT_B)
     check("offline: a known session still switches", names(jar).get("sessionKey") == "session-b")

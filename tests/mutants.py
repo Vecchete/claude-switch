@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Breaks one guard at a time and runs the suite that must catch it. A mutant that stays green is a guard
-no test holds. Every mutant undoes a behaviour that a review or a live incident asked for.
+no test holds. Every mutant undoes a behavior that a review or a live incident asked for.
 
 Usage: tests/mutants.py [-j JOBS] [NAME_OR_TARGET...]   (targets: switch, host, install, desktop)
 """
