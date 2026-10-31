@@ -57,5 +57,9 @@ replays it at its next start). Starting and quitting Desktop once settles it.
 - Cookies saved by another version of the cookie database (24 today) are not put back, which also
   means one sign-in.
 - When the keyring loses `Claude Safe Storage`, every saved Desktop sign-in is lost with it.
+- The encryption is Chromium's OSCrypt (AES-128-CBC, fixed IV, `v11`), which is what makes a saved
+  session recognizable by its bytes. Desktop 4.4212.0 runs Electron 44, and Electron 46 removes the
+  synchronous `safeStorage` API. A Desktop update that changes how it encrypts can make the saved
+  sign-ins unreadable, which means one sign-in per account.
 - `desktop.py status` prints what Desktop is on, `desktop.py quit` and `desktop.py start` close and
   start it.
