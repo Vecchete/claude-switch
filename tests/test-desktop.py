@@ -17,6 +17,8 @@ ACCOUNT_A = "aaaaaaaa-0000-4000-8000-0000000000a1"
 ACCOUNT_B = "bbbbbbbb-0000-4000-8000-0000000000b1"
 ACCOUNT_C = "cccccccc-0000-4000-8000-0000000000c1"
 SESSION = ("sessionKey", "sessionKeyLC", "routingHint", "lastActiveOrg")
+# Set when claude.ai registers Desktop for the Remote Control of an account, seen 2026-11-02.
+TRUSTED = "__Host-ant_trusted_device"
 COLUMNS = ["creation_utc", "host_key", "top_frame_site_key", "name", "value", "encrypted_value", "path", "expires_utc",
            "is_secure", "is_httponly", "last_access_utc", "has_expires", "is_persistent", "priority", "samesite",
            "source_scheme", "source_port", "last_update_utc", "source_type", "has_cross_site_ancestor"]
@@ -77,6 +79,16 @@ class Machine:
         config = self.config()
         config.update({"oauth:tokenCacheV2": f"djEx-{tag}", "lastKnownAccountUuid": account})
         self.write_config(config)
+
+    def register(self, tag):
+        """What Desktop keeps after it registered for the Remote Control of an account: a host-only cookie."""
+        with sqlite3.connect(self.desktop / "Cookies") as db:
+            db.execute("DELETE FROM cookies WHERE host_key = 'claude.ai' AND name = ?", (TRUSTED,))
+        self.add_cookie("claude.ai", TRUSTED, f"v11-{tag}-trusted".encode())
+
+    def trusted(self):
+        rows = [row for row in self.cookies("claude.ai") if row[3] == TRUSTED]
+        return rows[0][5] if rows else None
 
     def sign_out(self):
         with sqlite3.connect(self.desktop / "Cookies") as db:
@@ -143,7 +155,9 @@ with tempfile.TemporaryDirectory(prefix="claude-switch-desktop.") as folder:
           and not status["signedIn"] and status["account"] is None)
 
     m.sign_in(ACCOUNT_A, "A")
+    m.register("A")
     a_rows = m.cookies()
+    a_trusted = [row for row in m.cookies("claude.ai") if row[3] == TRUSTED]
     status = json.loads(m.run("status").stdout)
     check("status: signed in to A", status["signedIn"] and status["account"] == ACCOUNT_A)
 
@@ -161,8 +175,12 @@ with tempfile.TemporaryDirectory(prefix="claude-switch-desktop.") as folder:
           m.config()["userThemeMode"] == "dark" and m.config()["coworkTrustedDeviceToken:x"] == "keep")
     check("first switch to B: other cookies stay",
           (m.cookies(".google.com"), [row for row in m.cookies() if row[3] == "anthropic-device-id"]) == other_cookies)
+    check("first switch to B: A's trusted device saved with A",
+          any(row["name"] == TRUSTED for row in m.saved(ACCOUNT_A)["cookies"]))
+    check("first switch to B: A's trusted device not left to B", m.trusted() is None)
 
     m.sign_in(ACCOUNT_B, "B")
+    m.register("B")
     b_rows = m.cookies()
     result = m.run("switch", ACCOUNT_A)
     check("back to A: succeeds", result.returncode == 0 and "first" in result.stdout)
@@ -170,8 +188,12 @@ with tempfile.TemporaryDirectory(prefix="claude-switch-desktop.") as folder:
     check("back to A: its token cache comes back", m.config()["oauth:tokenCacheV2"] == "djEx-A")
     check("back to A: Desktop expects A", m.config()["lastKnownAccountUuid"] == ACCOUNT_A)
     check("back to A: B is saved", m.saved(ACCOUNT_B)["config"]["oauth:tokenCacheV2"] == "djEx-B")
+    check("back to A: its trusted device comes back", m.trusted() == b"v11-A-trusted")
+    check("back to A: B's trusted device saved with B",
+          any(row["name"] == TRUSTED for row in m.saved(ACCOUNT_B)["cookies"]))
     result = m.run("switch", ACCOUNT_B)
     check("to B again: its cookies come back whole", m.cookies() == b_rows)
+    check("to B again: its trusted device comes back", m.trusted() == b"v11-B-trusted")
     check("to B again: its token cache comes back", m.config()["oauth:tokenCacheV2"] == "djEx-B")
 
     # Desktop open: nothing is touched, unless it is already on the account.
@@ -201,7 +223,8 @@ with tempfile.TemporaryDirectory(prefix="claude-switch-desktop.") as folder:
     check("saved cookies name the session: B's copy untouched until saved as B",
           json.loads(saved_b)["cookies"] == m.saved(ACCOUNT_B)["cookies"] and m.cookies() == b_rows)
     check("saved cookies name the session: A saved as A", sorted(tuple(row[c] for c in COLUMNS[:5])
-          for row in m.saved(ACCOUNT_A)["cookies"]) == sorted(row[:5] for row in a_rows if row[3] in SESSION))
+          for row in m.saved(ACCOUNT_A)["cookies"]) == sorted(row[:5] for row in a_rows + a_trusted
+                                                                if row[3] in SESSION + (TRUSTED,)))
 
     # Signed in to an account nobody can name: nothing changes.
     m.sign_in(ACCOUNT_C, "C")

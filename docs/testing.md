@@ -27,7 +27,7 @@ no test holds. Every one of them must end `killed`.
 
 ```bash
 tests/mutants.py             # all, one at a time
-tests/mutants.py desktop     # the mutants of one file: switch, host, install or desktop
+tests/mutants.py desktop     # the mutants of one file: switch, host, install, desktop or worker
 ```
 
 Run them one at a time. The Chrome host suite depends on timing, and a run under load that fails for
@@ -45,3 +45,6 @@ thing:
   it revoked.
 - Claude Desktop 4.4212.0, 2026-10-31: TERM closes it cleanly in under a second and it removes its
   `SingletonLock`.
+- claude.ai, 2026-11-02: the first Remote Control session of an account in Chrome or Desktop asks for a
+  fresh sign-in, then sets `__Host-ant_trusted_device` and a device key in its IndexedDB, kept per
+  account.

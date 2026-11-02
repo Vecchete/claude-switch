@@ -49,9 +49,10 @@ if not re.fullmatch(r"http://127\.0\.0\.1:[0-9]+", CLAUDE_AI):
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
 
 # What a claude.ai sign-in writes, seen in Chrome Beta on 2026-10-30: the session and the active
-# organization. Only these move with the account. The device, its trust, analytics and the look of the
-# page stay with the browser.
-SESSION = ["sessionKey", "sessionKeyLC", "routingHint", "lastActiveOrg"]
+# organization. With them goes the cookie claude.ai sets when it registers the browser for the Remote
+# Control of the account (2026-11-02), so each account finds its own registration again when it comes
+# back. The device id, analytics and the look of the page stay with the browser.
+SESSION = ["sessionKey", "sessionKeyLC", "routingHint", "lastActiveOrg", "__Host-ant_trusted_device"]
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 # A switch made while Chrome was closed waits for claude.ai, which may be unreachable right after a boot.
@@ -126,7 +127,9 @@ def save(account, cookies):
 
 
 def load(account):
-    """The session saved for ACCOUNT, None when there is none. An expired one is removed."""
+    """The session saved for ACCOUNT, None when there is none. An expired one is removed, and a cookie of it
+    that ran out on its own, a Remote Control registration for instance, is left out: Chrome would not
+    keep it."""
     try:
         cookies = json.loads(saved_path(account).read_text())["cookies"]
         key = next(cookie for cookie in cookies if cookie["name"] == "sessionKey")
@@ -135,7 +138,7 @@ def load(account):
     if not key.get("session") and key.get("expirationDate", 0) < time.time():
         saved_path(account).unlink(missing_ok=True)
         return None
-    return cookies
+    return [cookie for cookie in cookies if cookie.get("session") or cookie.get("expirationDate", 0) > time.time()]
 
 
 def saved_sessions():

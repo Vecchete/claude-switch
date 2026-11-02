@@ -50,6 +50,10 @@ function makeChrome(jar, log, { refuse = [] } = {}) {
       set: async (details) => {
         log.push(`set:${details.name}${blocked ? "" : ":UNBLOCKED"}`);
         if (refuse.includes(details.name)) return null;
+        // Chrome refuses a __Host- cookie that names a domain, isn't secure or isn't for the whole host.
+        if (details.name.startsWith("__Host-") && (details.domain !== undefined || !details.secure || details.path !== "/")) {
+          return null;
+        }
         const domain = details.domain ?? new URL(details.url).host;
         const index = jar.findIndex((c) => c.name === details.name && c.domain === domain);
         if (index >= 0) jar.splice(index, 1);
@@ -112,6 +116,14 @@ jar = [cookie("sessionKey", "a"), ...device];
 ({ reply, log, fake } = await run(jar, { cmd: "apply", remove: [cookie("sessionKey", "a")], add: [cookie("sessionKey", "b"), cookie("routingHint", "q")] }, { refuse: ["routingHint"] }));
 check("refused: says which cookie", reply.error && reply.error.includes("routingHint"));
 check("refused: still unblocks", !fake.isBlocked());
+
+// apply, a host-only cookie such as the Remote Control registration
+jar = [cookie("sessionKey", "a"), ...device];
+({ reply, log, fake } = await run(jar, { cmd: "apply", remove: [cookie("sessionKey", "a")],
+  add: [cookie("sessionKey", "b"), cookie("__Host-ant_trusted_device", "t", "claude.ai")] }));
+check("host-only: no error", reply && !reply.error);
+check("host-only: set for claude.ai alone",
+  jar.some((c) => c.name === "__Host-ant_trusted_device" && c.value === "t" && c.hostOnly && c.domain === "claude.ai"));
 
 // release, and a host that goes away
 ({ reply, log, fake } = await run([...device], { cmd: "capture", names: SESSION }));

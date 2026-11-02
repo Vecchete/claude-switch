@@ -49,10 +49,10 @@ Add each account once with `claude-switch login`. From then on a switch never as
 
 - Claude Code: the login keys of `~/.claude/.credentials.json` and `oauthAccount` in `~/.claude.json`.
   Running sessions move to the new account at their next request.
-- claude.ai in Chrome: the four session cookies, swapped by the companion extension while claude.ai
-  is blocked, then the claude.ai tabs reload.
-- Claude Desktop: its claude.ai session and the tokens of its Code tab. Desktop has to be closed for
-  that, so an open Desktop is restarted when you say so.
+- claude.ai in Chrome: the four session cookies and the Remote Control registration cookie, swapped by
+  the companion extension while claude.ai is blocked, then the claude.ai tabs reload.
+- Claude Desktop: its claude.ai session, its Remote Control registration and the tokens of its Code
+  tab. Desktop has to be closed for that, so an open Desktop is restarted when you say so.
 
 Everything else stays: MCP logins, settings, projects, sessions, Chrome and Desktop preferences. Each
 account keeps its own history on claude.ai, and it comes back with the account.

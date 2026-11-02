@@ -15,7 +15,8 @@ Desktop keeps everything in `~/.config/Claude`. Three things in it belong to the
 4.4212.0 app:
 
 - the claude.ai session cookies in `Cookies` (`sessionKey`, `sessionKeyLC`, `routingHint`,
-  `lastActiveOrg` and the `sessionKeyV2`, `sessionKeyV3` variants Desktop also reads)
+  `lastActiveOrg` and the `sessionKeyV2`, `sessionKeyV3` variants Desktop also reads), with
+  `__Host-ant_trusted_device`, set when claude.ai registers Desktop for the Remote Control of the account
 - the tokens of the Code tab, `oauth:tokenCacheV2` (and the older `oauth:tokenCache`) in `config.json`
 - the account Desktop saw last, `lastKnownAccountUuid` in `config.json`
 
@@ -56,6 +57,8 @@ replays it at its next start). Starting and quitting Desktop once settles it.
   that account. A saved sign-in that expired in the meantime means one sign-in in Desktop.
 - Cookies saved by another version of the cookie database (24 today) are not put back, which also
   means one sign-in.
+- The first Remote Control session of an account in Desktop asks for one sign-in, which registers
+  Desktop for that account. From then on the registration moves with the account.
 - When the keyring loses `Claude Safe Storage`, every saved Desktop sign-in is lost with it.
 - The encryption is Chromium's OSCrypt (AES-128-CBC, fixed IV, `v11`), which is what makes a saved
   session recognizable by its bytes. Desktop 4.4212.0 runs Electron 44, and Electron 46 removes the

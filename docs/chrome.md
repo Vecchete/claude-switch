@@ -1,8 +1,10 @@
 # claude.ai in Chrome
 
 claude.ai keeps the account in four cookies: `sessionKey`, `sessionKeyLC`, `routingHint` and
-`lastActiveOrg`. The companion swaps those four on every switch, so claude.ai in Chrome follows without
-a sign-in and keeps the page settings of the browser.
+`lastActiveOrg`. A fifth one, `__Host-ant_trusted_device`, is set when claude.ai registers the browser
+for the Remote Control of the account. The companion swaps those five on every switch, so claude.ai in
+Chrome follows without a sign-in, each account gets its own Remote Control registration back, and the
+page keeps the settings of the browser.
 
 ## The parts
 
@@ -20,9 +22,10 @@ a sign-in and keeps the page settings of the browser.
    page, another refusal, a 5xx or no network means nobody can tell, and nothing changes.
 2. The extension blocks every claude.ai request with a session rule and waits a second. A page that
    sends half a swapped session gets it revoked (seen on 2026-10-30).
-3. The four cookies are read. When the `sessionKey` changed in the meantime, the swap stops.
+3. The five cookies are read. When the `sessionKey` changed in the meantime, the swap stops.
 4. The open session is saved under its account, the saved one of the target goes in with `sessionKey`
-   last, and the result is checked.
+   last, and the result is checked. A cookie of it that ran out on its own, an old registration for
+   instance, is left out, since Chrome would not keep it.
 5. claude.ai is unblocked and its tabs reload. A host that stops halfway lifts the block at its next
    start.
 
@@ -35,6 +38,15 @@ it when Chrome starts, retried every 30 seconds for 10 minutes. A newer switch r
 
 `~/.local/share/claude-switch/chrome-host.py --status` prints the account open in Chrome and the
 saved ones.
+
+## Remote Control
+
+The first time an account opens a Remote Control session in Chrome, claude.ai asks for a fresh sign-in
+and registers the browser for that account: a device key in its own site storage, one per account, and
+the `__Host-ant_trusted_device` cookie, one per browser. The switch carries that cookie with its
+account, so a registered account opens its remote sessions again without a sign-in. An account that
+never registered in this browser has no cookie to bring back, so claude.ai asks for that one sign-in.
+It also ends the session that was open, and the next switch saves the new one.
 
 ## Limits
 

@@ -20,7 +20,9 @@ ACCOUNT_C = "cccccccc-0000-4000-8000-0000000000c1"
 ORG_A = "aaaaaaaa-0000-4000-8000-00000000000a"
 ORG_B = "bbbbbbbb-0000-4000-8000-00000000000b"
 ORG_B2 = "bbbbbbbb-0000-4000-8000-0000000000b2"
-SESSION = {"sessionKey", "sessionKeyLC", "routingHint", "lastActiveOrg"}
+# Set when claude.ai registers the browser for the Remote Control of an account, seen 2026-11-02.
+DEVICE = "__Host-ant_trusted_device"
+SESSION = {"sessionKey", "sessionKeyLC", "routingHint", "lastActiveOrg", DEVICE}
 failures = []
 passes = 0
 
@@ -45,11 +47,14 @@ def web(letter, org):
             cookie("lastActiveOrg", org, http_only=False), cookie("routingHint", f"route-{letter}")]
 
 
-# What stays with the browser: Cloudflare, the device and its trust, analytics, the look of the page,
-# and a cookie claude.ai may add later.
+def trusted(letter, expires=4102444800):
+    return cookie(DEVICE, f"trusted-{letter}", domain="claude.ai", host_only=True, expires=expires)
+
+
+# What stays with the browser: Cloudflare, the device id, analytics, the look of the page, and a cookie
+# claude.ai may add later.
 BROWSER_SIDE = [cookie("cf_clearance", "cloudflare"), cookie("user-sidebar-pinned", "true", http_only=False),
                 cookie("anthropic-device-id", "device", domain="claude.ai", host_only=True, http_only=False),
-                cookie("__Host-ant_trusted_device", "trusted", domain="claude.ai", host_only=True),
                 cookie("ion-vk", "vk", domain="claude.ai", host_only=True),
                 cookie("newCookie", "new")]
 
@@ -129,10 +134,15 @@ class FakeExtension:
                 if not self.blocked:
                     self.unblocked_changes += 1
                 gone = {(c["name"], c["domain"]) for c in message["remove"]}
-                self.jar[:] = [c for c in self.jar if (c["name"], c["domain"]) not in gone] + message["add"]
+                # Chrome doesn't keep a cookie that expired already, and the worker says so.
+                kept = [c for c in message["add"] if c["session"] or c["expirationDate"] > time.time()]
+                lost = [c["name"] for c in message["add"] if c not in kept]
+                self.jar[:] = [c for c in self.jar if (c["name"], c["domain"]) not in gone] + kept
                 self.blocked = False
                 self.reloads += 1
                 reply = {"id": message["id"], "tabs": 1}
+                if lost:
+                    reply = {"id": message["id"], "error": f"Chrome did not keep {', '.join(lost)}"}
             elif message["cmd"] == "release":
                 self.blocked = False
                 reply = {"id": message["id"]}
@@ -189,7 +199,7 @@ try:
     (store / ".web").mkdir(mode=0o700)
     (store / ".web" / f"{ORG_B}.json").write_text(json.dumps(web("b", ORG_B)))
 
-    jar = web("a", ORG_A) + [dict(c) for c in BROWSER_SIDE]
+    jar = web("a", ORG_A) + [trusted("a")] + [dict(c) for c in BROWSER_SIDE]
     # A worker restarted in the middle of a swap left claude.ai blocked.
     extension = FakeExtension(home, jar, blocked=True)
     check("host: socket appears", wait_for(store / ".chrome.sock"))
@@ -210,6 +220,8 @@ try:
     check("switch: switched", "switched to bee" in result.stdout and names(jar).get("sessionKey") == "session-b")
     check("switch: the open session saved under its account", (saved(store, ACCOUNT_A) or {}).get("account") == ACCOUNT_A)
     check("switch: saved exactly the session cookies", {c["name"] for c in saved(store, ACCOUNT_A)["cookies"]} == SESSION)
+    check("switch: A's trusted device saved with A", names(saved(store, ACCOUNT_A)["cookies"]).get(DEVICE) == "trusted-a")
+    check("switch: A's trusted device not left to B", DEVICE not in names(jar))
     check("switch: saved file private", ((store / ".web" / f"{ACCOUNT_A}.json").stat().st_mode & 0o077) == 0)
     check("switch: browser cookies untouched", all(names(jar).get(c["name"]) == c["value"] for c in BROWSER_SIDE))
     check("switch: done while claude.ai was blocked", extension.unblocked_changes == 0 and not extension.blocked)
@@ -223,15 +235,21 @@ try:
     result = client(home, "--switch", ACCOUNT_B)
     check("second organization: already", "already on bee" in result.stdout and extension.reloads == reloads)
 
+    # B registers the browser for its Remote Control.
+    jar.append(trusted("b"))
+
     # Back to A: B's session is saved under B, whatever organization it was on.
     result = client(home, "--switch", ACCOUNT_A)
     check("back: switched", "switched to a@example.com" in result.stdout and names(jar).get("sessionKey") == "session-a")
     check("back: B saved under its account", names(saved(store, ACCOUNT_B)["cookies"]).get("lastActiveOrg") == ORG_B2)
+    check("back: B's trusted device saved with B", names(saved(store, ACCOUNT_B)["cookies"]).get(DEVICE) == "trusted-b")
+    check("back: A's trusted device put back", names(jar).get(DEVICE) == "trusted-a")
 
     # claude.ai down: a session saved before is still recognized.
     ClaudeAi.up = False
     result = client(home, "--switch", ACCOUNT_B)
     check("offline: a known session still switches", names(jar).get("sessionKey") == "session-b")
+    check("offline: B's trusted device put back", names(jar).get(DEVICE) == "trusted-b")
 
     # claude.ai down and a session it never saw: nothing changes.
     jar[:] = [c for c in jar if c["name"] not in SESSION] + web("c", ORG_A)
@@ -278,6 +296,15 @@ try:
     result = client(home, "--switch", ACCOUNT_B)
     check("dead session open: treated as signed out", names(jar).get("sessionKey") == "session-b")
     check("dead session open: the good one stayed", saved(store, ACCOUNT_B) == good_b)
+
+    # A registration that ran out while its session still runs is left out: Chrome would not keep it.
+    data = saved(store, ACCOUNT_A)
+    data["cookies"] = [c for c in data["cookies"] if c["name"] != DEVICE] + [trusted("a", expires=time.time() - 60)]
+    (store / ".web" / f"{ACCOUNT_A}.json").write_text(json.dumps(data))
+    result = client(home, "--switch", ACCOUNT_A)
+    check("expired trusted device: switched", result.returncode == 0 and "switched to a@example.com" in result.stdout)
+    check("expired trusted device: not put back", DEVICE not in names(jar))
+    client(home, "--switch", ACCOUNT_B)
 
     # An expired saved session is not put back.
     data = saved(store, ACCOUNT_A)

@@ -43,9 +43,10 @@ CONFIG = DESKTOP / "config.json"
 STORE = HOME / ".claude-accounts"
 SAVED = STORE / ".desktop"
 HOSTS = ("claude.ai", ".claude.ai")
-# The cookies claude.ai writes at a sign-in, and the other names Desktop reads a session from.
+# The cookies claude.ai writes at a sign-in, the other names Desktop reads a session from, and the cookie
+# claude.ai sets when it registers Desktop for the Remote Control of the account (2026-11-02).
 SESSION = ("sessionKey", "sessionKeyLC", "routingHint", "lastActiveOrg", "sessionKeyV2", "sessionKeyV3",
-           "sessionKeyV3LC")
+           "sessionKeyV3LC", "__Host-ant_trusted_device")
 KEYS = ("sessionKey", "sessionKeyV3")
 TOKENS = ("oauth:tokenCacheV2", "oauth:tokenCache")
 ACCOUNT = "lastKnownAccountUuid"

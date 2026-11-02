@@ -2,7 +2,7 @@
 """Breaks one guard at a time and runs the suite that must catch it. A mutant that stays green is a guard
 no test holds. Every mutant undoes a behavior that a review or a live incident asked for.
 
-Usage: tests/mutants.py [-j JOBS] [NAME_OR_TARGET...]   (targets: switch, host, install, desktop)
+Usage: tests/mutants.py [-j JOBS] [NAME_OR_TARGET...]   (targets: switch, host, install, desktop, worker)
 """
 import argparse
 import concurrent.futures
@@ -19,6 +19,7 @@ TARGETS = {
     "host": ROOT / "share/chrome-host.py",
     "install": ROOT / "install.sh",
     "desktop": ROOT / "share/desktop.py",
+    "worker": ROOT / "share/chrome-extension/worker.js",
 }
 
 # (name, target, suite, text of the target, what replaces it)
@@ -105,6 +106,15 @@ MUTANTS = [
     ("block-left", "host", "chrome-host",
      '    with switching:\n        try:\n            ask("release")\n        except (OSError, RuntimeError, queue.Empty):\n'
      "            pass\n", ""),
+    ("trusted-device-not-carried", "host", "chrome-host",
+     'SESSION = ["sessionKey", "sessionKeyLC", "routingHint", "lastActiveOrg", "__Host-ant_trusted_device"]',
+     'SESSION = ["sessionKey", "sessionKeyLC", "routingHint", "lastActiveOrg"]'),
+    ("expired-cookie-put-back", "host", "chrome-host",
+     '    return [cookie for cookie in cookies if cookie.get("session") or cookie.get("expirationDate", 0) > time.time()]',
+     "    return cookies"),
+    # The extension's worker.
+    ("worker-domain-on-host-only", "worker", "worker",
+     "    if (!cookie.hostOnly) details.domain = cookie.domain;", "    details.domain = cookie.domain;"),
     # Claude Desktop, from the switch.
     ("desktop-never-asked", "switch", "switch-desktop",
      "    if [ -t 0 ] && [ -t 1 ]; then\n        read -r -t 60", "    if false; then\n        read -r -t 60"),
@@ -145,6 +155,8 @@ MUTANTS = [
     ("desktop-env-passed-on", "desktop", "desktop", 'if not key.startswith(("CLAUDE", "ANTHROPIC"))', "if True"),
     ("desktop-quit-without-waiting", "desktop", "desktop", "    while running() is not None:", "    while False:"),
     ("desktop-signed-out-named", "desktop", "desktop", "    if key is None:\n        return None\n    for path", "    for path"),
+    ("desktop-trusted-device-not-carried", "desktop", "desktop",
+     '           "sessionKeyV3LC", "__Host-ant_trusted_device")', '           "sessionKeyV3LC")'),
     # The installer.
     ("old-name-kept", "install", "install", '    rm -f "$OLD"\n', "    :\n"),
     ("wrong-extension-id", "install", "install", 'chr(ord("a") + int(c, 16))', 'chr(ord("b") + int(c, 16))'),
@@ -170,6 +182,7 @@ def suite_command(suite, target, path):
         "install": ["bash", TESTS / "test-install.sh", files["install"]],
         "desktop": [sys.executable, "-I", TESTS / "test-desktop.py", files["desktop"]],
         "switch-desktop": ["bash", TESTS / "test-switch-desktop.sh", files["switch"]],
+        "worker": ["node", TESTS / "test-worker.mjs", files["worker"]],
     }
     return [str(part) for part in commands[suite]]
 
