@@ -25,9 +25,10 @@ finishes, and the rotated login is kept.
 ## When it can't
 
 When the server refuses a refresh, claude empties both tokens. The account gets `dead`, a switch to it
-is refused, and a desktop notification says to sign in again. A sign-in that ends within 3 days is
-announced once a day. A notification counts only once `notify-send` succeeded, so one lost at boot
-comes again at the next run.
+is refused, and a desktop notification says to sign in again, with the `claude-switch login` of that
+account. A sign-in that ends within 3 days is announced the same way once a day, and `list`, the prompt
+and a switch remind it from 7 days before. A notification counts only once `notify-send` succeeded, so
+one lost at boot comes again at the next run.
 
 A refresh killed after claude rotated the login leaves the new one in its folder. Every command brings
 it back first, a switch included, so a switch never puts live a token already used. Sign-in folders

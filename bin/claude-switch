@@ -49,6 +49,8 @@ DROP_CACHES='del(.managedSettingsNoticeSeenOrg, .additionalModelOptionsCache,
 REFRESH_AHEAD_MS=$((270 * 60 * 1000))
 # A sign-in that ends within this is announced.
 WARN_AHEAD_MS=$((3 * 24 * 3600 * 1000))
+# A sign-in that ends within this is reminded of by list, the prompt and a switch.
+REMIND_AHEAD_MS=$((7 * 24 * 3600 * 1000))
 
 LOCKS=()
 SIGNIN=""
@@ -83,11 +85,15 @@ Usage:
   claude-switch refresh [--force]        Refresh the login of the accounts that are not active.
                                          The claude-switch-refresh timer runs it at boot and every
                                          4 hours. --force refreshes them even when not due.
+  claude-switch help                     Print this help, as -h and --help do.
 
 A switch changes the account only, wherever you call it. New sessions start on it and running
 sessions move to it at their next request. claude.ai in Chrome follows it too, once the companion
 extension in ~/.local/share/claude-switch/chrome-extension is loaded in Chrome. Claude Desktop
 follows it as well: an open Desktop is restarted when you answer yes in a terminal.
+
+A sign-in lasts about 28 days, and only a new sign-in moves its end. From 7 days before, list, the
+prompt and a switch say when it ends, with the claude-switch login that renews it.
 
 Don't use /logout on an account you want to keep: it revokes the login saved here too.
 To forget an account, remove its file in ~/.claude-accounts.
@@ -173,8 +179,13 @@ read_account() {
     IFS=$'\x1f' read -r NAME EMAIL PLAN ENDS < <(jq -r '[.name, .oauthAccount.emailAddress,
         (.login.claudeAiOauth.subscriptionType // "-"),
         (if .dead then "signed out" else ((.login.claudeAiOauth.refreshTokenExpiresAt // 0) / 1000 | floor
-            | if . > 0 then strftime("%d/%m/%Y") else "-" end) end)] | join("\u001f")' "$1")
+            | if . > 0 then strflocaltime("%d/%m/%Y") else "-" end) end)] | join("\u001f")' "$1")
     LABEL=${NAME:-$EMAIL}
+}
+
+# The command that renews the account read last.
+login_hint() {
+    printf 'claude-switch login %q' "$LABEL"
 }
 
 # The file of the account called NAME, by name or email. Fails with 1 when none is, 2 when several are.
@@ -374,11 +385,11 @@ switch_to() {
         return 0
     fi
     if jq -e '.dead' "$file" >/dev/null; then
-        die "$LABEL was signed out, nothing changed. Sign in again: claude-switch login"
+        die "$LABEL was signed out, nothing changed. Sign in again: $(login_hint)"
     fi
     ends=$(jq -r '.login.claudeAiOauth.refreshTokenExpiresAt // 0' "$file")
     if [ "$ends" -gt 0 ] && [ "$ends" -lt "$(date +%s%3N)" ]; then
-        die "The login of $LABEL ended on $ENDS, nothing changed. Sign in again: claude-switch login"
+        die "The login of $LABEL ended on $ENDS, nothing changed. Sign in again: $(login_hint)"
     fi
     lock_live
     save_live
@@ -521,8 +532,8 @@ finish_stub() {
         # claude empties the tokens when the server refuses the refresh. Only a new sign-in helps.
         jq --arg when "$(date +%d/%m/%Y)" '.dead = $when' "$file" > "$file.tmp"
         mv "$file.tmp" "$file"
-        printf '%s: the login was refused, sign in again: claude-switch login\n' "$LABEL"
-        notify_once "dead:${file##*/}" "Claude account $LABEL is signed out" "Sign in again: claude-switch login"
+        printf '%s: the login was refused, sign in again: %s\n' "$LABEL" "$(login_hint)"
+        notify_once "dead:${file##*/}" "Claude account $LABEL is signed out" "Sign in again: $(login_hint)"
         DEAD=1
     elif ! stub_moved "$stub"; then
         printf '%s: not refreshed this time: %s\n' "$LABEL" "$(grep -v '^{' "$stub/.out" 2>/dev/null | head -1 || true)"
@@ -544,15 +555,15 @@ refresh_account() {
     local file=$1 force=$2 now expires ends
     read_account "$file"
     if jq -e '.dead' "$file" >/dev/null; then
-        printf '%s: signed out, sign in again: claude-switch login\n' "$LABEL"
-        notify_once "dead:${file##*/}" "Claude account $LABEL is signed out" "Sign in again: claude-switch login"
+        printf '%s: signed out, sign in again: %s\n' "$LABEL" "$(login_hint)"
+        notify_once "dead:${file##*/}" "Claude account $LABEL is signed out" "Sign in again: $(login_hint)"
         DEAD=1
         return 0
     fi
     now=$(date +%s%3N)
     ends=$(jq -r '.login.claudeAiOauth.refreshTokenExpiresAt // 0' "$file")
     if [ "$ends" -gt 0 ] && [ "$ends" -lt "$now" ]; then
-        printf '%s: the sign-in ended on %s, sign in again: claude-switch login\n' "$LABEL" "$ENDS"
+        printf '%s: the sign-in ended on %s, sign in again: %s\n' "$LABEL" "$ENDS" "$(login_hint)"
         DEAD=1
         return 0
     fi
@@ -580,20 +591,56 @@ refresh_account() {
     STUB=""
 }
 
-# Only a new sign-in moves the date a sign-in ends, so that date is announced ahead.
+# When the time MS comes, in days of the calendar here: today, tomorrow or in N days. From noon to noon,
+# since a day is 23 or 25 hours long when the clock changes.
+days_to() {
+    local days
+    days=$(( ($(date -d "$(date -d "@$(($1 / 1000))" +%F) 12:00" +%s) - $(date -d "12:00" +%s) + 43200) / 86400 ))
+    case $days in
+        0) printf 'today' ;;
+        1) printf 'tomorrow' ;;
+        *) printf 'in %d days' "$days" ;;
+    esac
+}
+
+# What to do about the sign-in of FILE when it's over or ends within MS, nothing otherwise. FILE MS
+signin_reminder() {
+    local ends now
+    read_account "$1"
+    ends=$(jq -r '.login.claudeAiOauth.refreshTokenExpiresAt // 0' "$1")
+    now=$(date +%s%3N)
+    if jq -e '.dead' "$1" >/dev/null; then
+        printf '%s is signed out. Sign in again: %s\n' "$LABEL" "$(login_hint)"
+    elif [ "$ends" -le 0 ] || [ $((ends - now)) -ge "$2" ]; then
+        return 0
+    elif [ "$ends" -le "$now" ]; then
+        printf 'The sign-in of %s ended on %s. Sign in again: %s\n' "$LABEL" "$ENDS" "$(login_hint)"
+    else
+        printf 'The sign-in of %s ends on %s, %s. Sign in again before then: %s\n' "$LABEL" "$ENDS" \
+            "$(days_to "$ends")" "$(login_hint)"
+    fi
+}
+
+# Only a new sign-in moves the date a sign-in ends, so that date is reminded of ahead of time.
+remind_signins() {
+    local file text
+    for file in "$STORE"/*.json; do
+        text=$(signin_reminder "$file" "$REMIND_AHEAD_MS")
+        [ -z "$text" ] || warn "$text"
+    done
+}
+
+# The same on the desktop, closer to the date. A refused login is announced by its refresh.
 check_deadline() {
-    local file=$1 ends
+    local file=$1 text
     if jq -e '.dead' "$file" >/dev/null; then
         return 0
     fi
-    ends=$(jq -r '.login.claudeAiOauth.refreshTokenExpiresAt // 0' "$file")
-    if [ "$ends" -le 0 ] || [ $((ends - $(date +%s%3N))) -ge "$WARN_AHEAD_MS" ]; then
-        return 0
-    fi
+    text=$(signin_reminder "$file" "$WARN_AHEAD_MS")
+    [ -n "$text" ] || return 0
     read_account "$file"
-    printf '%s: the sign-in ends on %s, sign in again before then: claude-switch login\n' "$LABEL" "$ENDS"
-    notify_once "ends:${file##*/}" "Claude sign-in of $LABEL ends on $ENDS" \
-        "Sign in again before then: claude-switch login"
+    printf '%s\n' "$text"
+    notify_once "ends:${file##*/}" "Claude sign-in of $LABEL" "$text"
 }
 
 # A refresh killed once claude rotated a login leaves the new one in its folder, and the store's copy is
@@ -668,6 +715,7 @@ cmd_list() {
         [ "$file" != "$live" ] || marker="*"
         printf '%s %-28s %-36s %-6s %s\n' "$marker" "$LABEL" "$EMAIL" "$PLAN" "$ENDS"
     done
+    remind_signins
 }
 
 # True when TEXT is the number of a row. TEXT ROWS
@@ -711,6 +759,7 @@ cmd_prompt() {
             [ "$file" != "$live" ] || here="active"
             printf '  %2d) %-56s %-6s %-17s %s\n' "$row" "$shown" "$PLAN" "$when" "$here"
         done
+        remind_signins
         printf '\n   a) Add an account\n   r) Rename an account\n   q) Quit\n\n'
         if ! read -r -p 'Select an account to switch to: ' choice; then
             printf '\n'
@@ -781,5 +830,6 @@ case ${1:-} in
         [ $# -eq 1 ] || die "Usage: claude-switch NAME"
         file=$(require_account "$1") || exit 1
         switch_to "$file"
+        remind_signins
         ;;
 esac

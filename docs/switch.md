@@ -45,10 +45,12 @@ only on a switch. `claude-switch login ACCOUNT` renews an account: claude.ai in 
 first, the sign-in page gets its email (`claude auth login --email`), and Chrome comes back to the
 live account however the sign-in ends.
 
-Only a new sign-in moves the date a sign-in ends (about 28 days), the refresh doesn't. The refresh
-announces it 3 days ahead. To renew the live account, `/login` in a session works too. Never `/login`
-to another account and never `/logout`: `/logout` revokes the refresh token on the server, and the
-copy in the store dies with it.
+Only a new sign-in moves the date a sign-in ends (about 28 days), the refresh doesn't. From 7 days
+ahead, `list`, the prompt and a switch say when it ends, with the command that renews the account,
+`claude-switch login NAME`. The days are the days of the calendar here, so a sign-in that ends on
+09/11 is in 7 days all through 02/11. The refresh announces it on the desktop from 3 days ahead. To
+renew the live account, `/login` in a session works too. Never `/login` to another account and never
+`/logout`: `/logout` revokes the refresh token on the server, and the copy in the store dies with it.
 
 ## Remote Control
 

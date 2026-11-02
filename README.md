@@ -48,6 +48,13 @@ claude-switch help                     this list, -h and --help too
 Add each account once with `claude-switch login`. From then on a switch never asks for a sign-in.
 Tab completes the commands and the accounts, by name or email, in bash with bash-completion.
 
+A sign-in lasts about 28 days and only a new sign-in moves its end. From 7 days before, `list`, the
+prompt and a switch say when it ends, with the command that renews it:
+
+```text
+claude-switch: The sign-in of work ends on 09/11/2026, in 7 days. Sign in again before then: claude-switch login work
+```
+
 ## What a switch moves
 
 - Claude Code: the login keys of `~/.claude/.credentials.json` and `oauthAccount` in `~/.claude.json`.

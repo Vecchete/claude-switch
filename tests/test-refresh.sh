@@ -118,12 +118,14 @@ check "dead: exit 1" '[ "$rc" = 1 ]'
 check "dead: stored login kept" '[ "$(b .login.claudeAiOauth.refreshToken)" = B-refresh ]'
 check "dead: marked" '[ "$(b .dead)" != null ]'
 check "dead: announced" '[ "$(notified)" = 1 ] && grep -q bee "$FAKE_STATE/notify"'
-check "dead: says it" 'grep -q "^bee: the login was refused" "$S/out"'
+check "dead: the notification names the command" 'grep -q "Sign in again: claude-switch login bee$" "$FAKE_STATE/notify"'
+check "dead: says it" 'grep -q "^bee: the login was refused, sign in again: claude-switch login bee$" "$S/out"'
 check "dead: listed as signed out" '"$SCRIPT" list | grep bee | grep -q "signed out"'
 "$SCRIPT" bee > "$S/out" 2>&1
 check "dead: switch refused" 'grep -q "signed out" "$S/out" && [ "$(live .claudeAiOauth.accessToken)" = A-access ]'
 FAKE_MODE=dead "$SCRIPT" refresh > "$S/out" 2>&1
 check "dead: not tried again" '[ "$(calls)" = 1 ]'
+check "dead: still says it" 'grep -q "^bee: signed out, sign in again: claude-switch login bee$" "$S/out"'
 check "dead: announced once a day" '[ "$(notified)" = 1 ]'
 FAKE_EMAIL=b@example.com FAKE_ORG=org-bbbb-0000 FAKE_TOKEN=new "$SCRIPT" login > "$S/out" 2>&1
 check "dead: a new sign-in clears it" '[ "$(b .dead)" = null ] && [ "$(b .login.claudeAiOauth.accessToken)" = new-access ]'
@@ -202,11 +204,13 @@ wait "$PID" 2>/dev/null
 check "stopped while writing: rotated login kept" '[ "$(b .login.claudeAiOauth.accessToken)" = acc-1 ]'
 check "stopped while writing: no folder left" '[ "$(stubs_left)" = 0 ]'
 
-# 12. A sign-in that ends within 3 days is announced, once a day.
-setup ending 25200000 $((2 * 86400000))
+# 12. A sign-in that ends within 3 days is announced, once a day, with the command that renews it.
+setup ending 25200000 $(( $(date -d "$(date +%F) 12:00 2 days" +%s)000 - $(now) ))
 "$SCRIPT" refresh > "$S/out" 2>&1
 check "ending: announced" '[ "$(notified)" = 1 ] && grep -q bee "$FAKE_STATE/notify"'
-check "ending: says it" 'grep -q "^bee: the sign-in ends on" "$S/out"'
+check "ending: the notification names the command" 'grep -q "claude-switch login bee$" "$FAKE_STATE/notify"'
+check "ending: says it" \
+    'grep -qx "The sign-in of bee ends on $(date -d "2 days" +%d/%m/%Y), in 2 days. Sign in again before then: claude-switch login bee" "$S/out"'
 "$SCRIPT" refresh > "$S/out" 2>&1
 check "ending: once a day" '[ "$(notified)" = 1 ]'
 check "ending: no refresh for that" '[ "$(calls)" = 0 ]'

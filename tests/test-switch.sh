@@ -48,6 +48,7 @@ check "mcp logins are not in the account file" '! grep -q mcp-token "$HOME"/.cla
 # The command is claude-switch, and every hint it prints names it so.
 "$SCRIPT" help > "$T/out" 2>&1
 check "help names the command claude-switch" 'grep -q "^  claude-switch NAME " "$T/out"'
+check "help lists itself" 'grep -q "^  claude-switch help " "$T/out"'
 check "no hint names claude-switch.sh" '! grep -q "claude-switch\.sh" "$SCRIPT"'
 
 STUB_EMAIL=b@example.com STUB_TOKEN=B "$SCRIPT" login > "$T/out" 2>&1
@@ -91,6 +92,7 @@ jq '.login.claudeAiOauth.refreshTokenExpiresAt = 1000' "$HOME"/.claude-accounts/
 cp "$T/c" "$HOME"/.claude-accounts/a@example.com_*.json
 "$SCRIPT" a@example.com > "$T/out" 2>&1
 check "a dead login is refused" 'grep -q "ended on" "$T/out"'
+check "a dead login: the hint names it" 'grep -q "Sign in again: claude-switch login a@example.com$" "$T/out"'
 check "a dead login changes nothing" '[ "$(live_cred .claudeAiOauth.accessToken)" = B-access ]'
 
 STUB_LOGIN_RC=1 STUB_EMAIL=c@example.com STUB_TOKEN=C "$SCRIPT" login > "$T/out" 2>&1
@@ -194,6 +196,52 @@ cp "$T/c" "$HOME/.claude/.credentials.json"
 "$SCRIPT" list > "$T/out" 2>&1
 check "emptied live login: the stored one stays" '[ -n "$(jq -r .login.claudeAiOauth.refreshToken "$B_FILE")" ]'
 check "emptied live login: no account shown active" '! grep -q "^\*" "$T/out"'
+
+# Only a new sign-in moves the date a sign-in ends. From 7 days before, list, the prompt and a switch
+# remind it with the command that renews the account, the days counted on the calendar.
+C_FILE=$(ls "$HOME"/.claude-accounts/c@example.com_*.json)
+ends_at() {
+    jq --argjson ends "$2" '.login.claudeAiOauth.refreshTokenExpiresAt = $ends' "$1" > "$T/c" && cp "$T/c" "$1"
+}
+noon_in() {
+    printf '%s000' "$(date -d "$(date +%F) 12:00 $1 days" +%s)"
+}
+day_in() {
+    date -d "$1 days" +%d/%m/%Y
+}
+ends_at "$B_FILE" "$(noon_in 2)"
+ends_at "$C_FILE" "$(noon_in 10)"
+"$SCRIPT" list > "$T/out" 2>&1
+check "reminder: list says when, with the command" \
+    'grep -qx "claude-switch: The sign-in of second ends on $(day_in 2), in 2 days. Sign in again before then: claude-switch login second" "$T/out"'
+check "reminder: not 10 days ahead" '! grep -q "c@example.com ends" "$T/out"'
+"$SCRIPT" c@example.com > "$T/out" 2>&1
+check "reminder: after a switch" \
+    'grep -q "Switched to c@example.com" "$T/out" && grep -q "The sign-in of second ends on $(day_in 2), in 2 days" "$T/out"'
+printf 'q\n' | script -qfc "$SCRIPT" /dev/null > "$T/out" 2>&1
+check "reminder: in the prompt" 'grep -aq "The sign-in of second ends on $(day_in 2), in 2 days" "$T/out"'
+ends_at "$B_FILE" "$(noon_in 1)"
+"$SCRIPT" list > "$T/out" 2>&1
+check "reminder: tomorrow" 'grep -q "The sign-in of second ends on $(day_in 1), tomorrow\. " "$T/out"'
+ends_at "$B_FILE" $(( $(date +%s%3N) + 60000 ))
+when=today
+[ "$(date -d "1 minute" +%F)" = "$(date +%F)" ] || when=tomorrow
+"$SCRIPT" list > "$T/out" 2>&1
+check "reminder: today" 'grep -q "The sign-in of second ends on .*, $when\. " "$T/out"'
+ends_at "$B_FILE" $(( $(date +%s%3N) - 86400000 ))
+"$SCRIPT" list > "$T/out" 2>&1
+check "reminder: ended" \
+    'grep -qx "claude-switch: The sign-in of second ended on $(day_in -1). Sign in again: claude-switch login second" "$T/out"'
+jq '.dead = "01/11/2026"' "$B_FILE" > "$T/c" && cp "$T/c" "$B_FILE"
+"$SCRIPT" list > "$T/out" 2>&1
+check "reminder: signed out" 'grep -qx "claude-switch: second is signed out. Sign in again: claude-switch login second" "$T/out"'
+jq 'del(.dead)' "$B_FILE" > "$T/c" && cp "$T/c" "$B_FILE"
+# The dates and days of the clock here: midnight in Tokyo is the day before in UTC, and less than two
+# whole days away.
+ends_at "$B_FILE" "$(TZ=JST-9 date -d "$(TZ=JST-9 date +%F) 00:00 2 days" +%s)000"
+TZ=JST-9 "$SCRIPT" list > "$T/out" 2>&1
+check "reminder: local dates, calendar days" \
+    'grep -q "The sign-in of second ends on $(TZ=JST-9 date -d "2 days" +%d/%m/%Y), in 2 days" "$T/out"'
 
 printf '%d passed, %d failed\n' "$passes" "$fails"
 [ "$fails" -eq 0 ]
