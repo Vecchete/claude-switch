@@ -2,7 +2,8 @@
 """Breaks one guard at a time and runs the suite that must catch it. A mutant that stays green is a guard
 no test holds. Every mutant undoes a behavior that a review or a live incident asked for.
 
-Usage: tests/mutants.py [-j JOBS] [NAME_OR_TARGET...]   (targets: switch, host, install, desktop, worker)
+Usage: tests/mutants.py [-j JOBS] [NAME_OR_TARGET...]   (targets: switch, host, install, desktop, worker,
+completion)
 """
 import argparse
 import concurrent.futures
@@ -20,6 +21,7 @@ TARGETS = {
     "install": ROOT / "install.sh",
     "desktop": ROOT / "share/desktop.py",
     "worker": ROOT / "share/chrome-extension/worker.js",
+    "completion": ROOT / "share/completion.bash",
 }
 
 # (name, target, suite, text of the target, what replaces it)
@@ -157,8 +159,27 @@ MUTANTS = [
     ("desktop-signed-out-named", "desktop", "desktop", "    if key is None:\n        return None\n    for path", "    for path"),
     ("desktop-trusted-device-not-carried", "desktop", "desktop",
      '           "sessionKeyV3LC", "__Host-ant_trusted_device")', '           "sessionKeyV3LC")'),
+    # The bash completion.
+    ("completion-not-escaped", "completion", "completion",
+     "            COMPREPLY+=(\"$(printf '%q' \"$candidate\")\")\n", '            COMPREPLY+=("$candidate")\n'),
+    ("completion-quote-escaped", "completion", "completion",
+     '        if [ -n "$QUOTE" ]; then\n            COMPREPLY+=("$candidate")\n',
+     '        if false; then\n            COMPREPLY+=("$candidate")\n'),
+    ("completion-at-left-out", "completion", "completion", "                    [\\$@]) broken=$word ;;\n", ""),
+    ("completion-base-repeated", "completion", "completion", '        candidate=${candidate#"$BASE"}\n', ""),
+    ("completion-any-word", "completion", "completion", '        [[ $candidate == "${WORDS[-1]}"* ]] || continue\n', ""),
+    ("completion-names-expanded", "completion", "completion",
+     "    while IFS= read -r candidate; do\n",
+     '    while IFS= read -r candidate; do\n        candidate=$(eval "printf %s \\"$candidate\\"")\n'),
+    ("completion-glob-fails", "completion", "completion",
+     '    mapfile -t files < <(compgen -G "$HOME/.claude-accounts/*.json")\n', '    files=("$HOME"/.claude-accounts/*.json)\n'),
     # The installer.
     ("old-name-kept", "install", "install", '    rm -f "$OLD"\n', "    :\n"),
+    ("completion-not-installed", "install", "install",
+     'place "$ROOT/share/completion.bash" "$COMPLETIONS/claude-switch" 644\n', ""),
+    ("completion-not-where-bash-completion-looks", "install", "install",
+     "COMPLETIONS=${BASH_COMPLETION_USER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion}/completions\n",
+     "COMPLETIONS=$HOME/.local/share/bash-completion/completions\n"),
     ("wrong-extension-id", "install", "install", 'chr(ord("a") + int(c, 16))', 'chr(ord("b") + int(c, 16))'),
     ("mode-ignored", "install", "install", ' && [ "$(stat -c %a "$target")" = "$mode" ]', ""),
     ("check-installs", "install", "install",
@@ -183,6 +204,7 @@ def suite_command(suite, target, path):
         "desktop": [sys.executable, "-I", TESTS / "test-desktop.py", files["desktop"]],
         "switch-desktop": ["bash", TESTS / "test-switch-desktop.sh", files["switch"]],
         "worker": ["node", TESTS / "test-worker.mjs", files["worker"]],
+        "completion": ["bash", TESTS / "test-completion.sh", files["completion"]],
     }
     return [str(part) for part in commands[suite]]
 

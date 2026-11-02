@@ -22,6 +22,7 @@ git clone git@github.com:Vecchete/claude-switch.git ~/claude-switch
 | `bin/claude-switch` | `~/.local/bin/claude-switch` |
 | `share/chrome-host.py`, `share/desktop.py` | `~/.local/share/claude-switch/` |
 | `share/chrome-extension/` | `~/.local/share/claude-switch/chrome-extension/` |
+| `share/completion.bash` | `~/.local/share/bash-completion/completions/claude-switch` |
 | `systemd/claude-switch-refresh.*` | `~/.config/systemd/user/`, the timer enabled |
 | the native host manifest, written by `install.sh` | `NativeMessagingHosts` of each Chrome installed |
 
@@ -41,9 +42,11 @@ claude-switch list                     the accounts, * marks the active one
 claude-switch login [ACCOUNT]          sign in an account and keep it, or renew ACCOUNT
 claude-switch rename NAME NEW_NAME     rename an account
 claude-switch refresh [--force]        refresh the accounts that are not active (the timer does it)
+claude-switch help                     this list, -h and --help too
 ```
 
 Add each account once with `claude-switch login`. From then on a switch never asks for a sign-in.
+Tab completes the commands and the accounts, by name or email, in bash with bash-completion.
 
 ## What a switch moves
 

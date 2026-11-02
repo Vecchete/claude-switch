@@ -12,6 +12,7 @@ scratch `HOME`:
 | `test-worker.mjs` | the extension's worker, with a fake `chrome` API (needs `node`) |
 | `test-desktop.py` | `desktop.py`, with a Desktop folder, a cookie database and fake Desktop processes |
 | `test-switch-desktop.sh` | `claude-switch` driving `desktop.py` |
+| `test-completion.sh` | the bash completion, called directly and through readline in a real interactive bash |
 | `test-install.sh` | `install.sh`, with a fake `systemctl` |
 
 ```bash
@@ -27,7 +28,7 @@ no test holds. Every one of them must end `killed`.
 
 ```bash
 tests/mutants.py             # all, one at a time
-tests/mutants.py desktop     # the mutants of one file: switch, host, install, desktop or worker
+tests/mutants.py desktop     # the mutants of one file: switch, host, install, desktop, worker or completion
 ```
 
 Run them one at a time. The Chrome host suite depends on timing, and a run under load that fails for

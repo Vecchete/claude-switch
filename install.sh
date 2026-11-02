@@ -14,6 +14,8 @@ BIN=$HOME/.local/bin
 SHARE=$HOME/.local/share/claude-switch
 UNITS=$HOME/.config/systemd/user
 STORE=$HOME/.claude-accounts
+# Where bash-completion looks for the completion of a command at its first Tab.
+COMPLETIONS=${BASH_COMPLETION_USER_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion}/completions
 HOST_NAME=com.lucasvecchete.claude_switch
 # The browsers that get the manifest of the native host, the ones installed here.
 BROWSERS=(google-chrome-beta google-chrome)
@@ -71,6 +73,7 @@ changed() {
 place "$ROOT/bin/claude-switch" "$BIN/claude-switch" 755
 place "$ROOT/share/chrome-host.py" "$SHARE/chrome-host.py" 755
 place "$ROOT/share/desktop.py" "$SHARE/desktop.py" 755
+place "$ROOT/share/completion.bash" "$COMPLETIONS/claude-switch" 644
 for file in manifest.json worker.js; do
     place "$ROOT/share/chrome-extension/$file" "$SHARE/chrome-extension/$file" 644
 done
@@ -121,5 +124,8 @@ if changed "$SHARE/chrome-host.py" && pgrep -f "^python3 -I $SHARE/chrome-host.p
 fi
 if changed "$SHARE/chrome-extension/*"; then
     printf 'Chrome loads the new extension when it starts again. To load it now: chrome://extensions, Reload on Claude account switch.\n'
+fi
+if changed "$COMPLETIONS/claude-switch"; then
+    printf 'Tab completes claude-switch in new shells. In an open one: source %q\n' "$COMPLETIONS/claude-switch"
 fi
 [ "${#CHANGED[@]}" -gt 0 ] || printf 'Nothing to install, everything matches %s.\n' "$ROOT"
