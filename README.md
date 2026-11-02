@@ -5,8 +5,9 @@ in Chrome and Claude Desktop all move to the account you pick, and nothing else 
 `~/.claude`, one `~/.claude.json`, the same rules, MCP servers, sessions, settings and history for
 every account.
 
-Linux only, tested on Ubuntu 24.04 with Claude Code 2.1.314, Chrome Beta 155 and Claude Desktop
-4.4212.0 (the official Linux beta).
+Linux, tested on Ubuntu 24.04 with Claude Code 2.1.314, Chrome Beta 155 and Claude Desktop
+4.4212.0 (the official Linux beta). A Windows 11 port is in [windows/](windows/README.md): it passes
+the suites of the Linux version, and has not run on Windows yet.
 
 ## Install
 
