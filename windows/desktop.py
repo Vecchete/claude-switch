@@ -26,7 +26,9 @@ projects, the starred sessions and the sidebar's sorting stay as they are. What 
 left, its sidebar sections and groups, its project order and its presets, is copied to the next account, as are the
 settings its own files keep per account. What an account can't hand over, its sign-in, its Code
 sessions, its Remote Control environments and its drafts, stays its own: the storage is saved with the account left,
-and what goes missing while it is away comes back when it does, a database that can't be merged when it went whole.
+and what goes missing while it is away comes back when it does. IndexedDB and WebStorage can't be merged, and
+Remote Control keeps the account's trusted device key there, so they are the account's and come back with its
+sign-in.
 The bypass permissions gate and what auto mode warned of stay per account, as do what an account connected on
 claude.ai and what claude.ai found it may use.
 
@@ -120,10 +122,15 @@ BOUND = re.compile(rf"(?:env|session)_[0-9A-Za-z]{{16,}}|local_{ID}")
 # Desktop's own files of settings kept per account, carried the same way. remote-control-state.json and
 # ant-device-registry.json are not among them: they hold what claude.ai registered for one account.
 CARRIED_FILES = ("claude_desktop_config.json", "ccd-session-presets.json", "mcp-user-tool-toggles.json")
-# The databases of the window that can't be merged, each with the folders that go with it: claude.ai's IndexedDB is
-# the two Chromium deletes when it clears the site. One that went whole comes back whole.
-RESTORED = (("Local Storage/leveldb",), ("WebStorage",),
-            ("IndexedDB/https_claude.ai_0.indexeddb.leveldb", "IndexedDB/https_claude.ai_0.indexeddb.blob"))
+INDEXEDDB = ("IndexedDB/https_claude.ai_0.indexeddb.leveldb", "IndexedDB/https_claude.ai_0.indexeddb.blob")
+# The databases of the window that belong to the account signed in and can't be merged: WebStorage, and claude.ai's
+# IndexedDB, the two folders Chromium deletes when it clears the site. claude.ai keeps the trusted device key of Remote
+# Control there, and Desktop emptied them when it started signed out (seen on the PC on 2026-10-22), so each account
+# gets its own back with its sign-in. Local Storage is merged instead, and comes back whole only when it went whole.
+SWAPPED = ("WebStorage", *INDEXEDDB)
+# What the copy saved for an account keeps from the copy before when the window no longer has it, each with the
+# folders that go with it, so the only copy of a database is never dropped.
+KEPT = (("Local Storage/leveldb",), ("WebStorage",), INDEXEDDB)
 # Windows: how long a quit waits for the helpers that outlive Desktop to let go of its files.
 FILES_FREE_SECONDS = 15
 # A program of Claude Desktop: the app, or the Claude Code its Code tab runs.
@@ -366,7 +373,7 @@ def save_web(account):
     for name in WEB:
         if (DESKTOP / name).is_dir():
             shutil.copytree(DESKTOP / name, fresh / name)
-    for unit in RESTORED:
+    for unit in KEPT:
         if not any((fresh / path).exists() for path in unit):
             for path in unit:
                 if (target / path).is_dir():
@@ -376,6 +383,86 @@ def save_web(account):
         os.replace(target, old)
     os.replace(fresh, target)
     shutil.rmtree(old, ignore_errors=True)
+
+
+def beside(path, suffix):
+    live = DESKTOP / path
+    return live.with_name(live.name + suffix)
+
+
+def stage_web(account):
+    """Windows: the databases saved for ACCOUNT, copied beside Desktop's own and ready to go in, as (path, copy) pairs:
+    no copy for a database they lack, which goes. [] when ACCOUNT has none saved: the ones in place stay."""
+    source = saved_web(account)
+    if not WINDOWS or not source.is_dir():
+        return []
+    staged = []
+    try:
+        for path in SWAPPED:
+            ready = beside(path, ".switching")
+            shutil.rmtree(ready, ignore_errors=True)
+            if (source / path).is_dir():
+                shutil.copytree(source / path, ready)
+                staged.append((path, ready))
+            else:
+                staged.append((path, None))
+    except BaseException:
+        drop_staged(staged)
+        raise
+    return staged
+
+
+def drop_staged(staged):
+    for _, ready in staged:
+        if ready is not None:
+            shutil.rmtree(ready, ignore_errors=True)
+
+
+def swap_web(staged):
+    """Puts the staged databases in place: each of Desktop's goes aside and its copy takes its place, all undone when
+    one fails. Returns what went aside, to remove once the switch is written."""
+    aside = []
+    try:
+        for path, ready in staged:
+            live, old = DESKTOP / path, beside(path, ".old")
+            shutil.rmtree(old, ignore_errors=True)
+            if live.exists():
+                os.replace(live, old)
+                aside.append((live, old, ready))
+            else:
+                aside.append((live, None, ready))
+            if ready is not None:
+                os.replace(ready, live)
+    except BaseException:
+        unswap_web(aside)
+        raise
+    return aside
+
+
+def unswap_web(aside):
+    """Desktop's own databases back where they were."""
+    for live, old, ready in reversed(aside):
+        if ready is not None and not ready.exists():
+            shutil.rmtree(live, ignore_errors=True)
+        if old is not None and old.exists() and not live.exists():
+            os.replace(old, live)
+
+
+def finish_web(aside):
+    for _, old, _ in aside:
+        if old is not None:
+            shutil.rmtree(old, ignore_errors=True)
+
+
+def repair_web():
+    """Windows: a switch cut in the middle of the swap left a database of Desktop aside, which comes back before
+    anything is saved. The copies it left go."""
+    for path in SWAPPED:
+        live, old, ready = DESKTOP / path, beside(path, ".old"), beside(path, ".switching")
+        if old.is_dir() and not live.exists():
+            os.replace(old, live)
+        shutil.rmtree(old, ignore_errors=True)
+        shutil.rmtree(ready, ignore_errors=True)
 
 
 def localstorage():
@@ -593,10 +680,10 @@ def write_file(path, text):
 
 
 def restore_folders(target):
-    """The databases of the window that can't be merged come back whole from the copy saved for TARGET, when they went
-    whole. Returns none carried over, how many came back, and no problem: a copy that fails raises."""
+    """Local Storage gone whole comes back whole from the copy saved for TARGET, before the settings are carried over.
+    Returns none carried over, how many came back, and no problem: a copy that fails raises."""
     kept = saved_web(target)
-    missing = [unit for unit in RESTORED if not any((DESKTOP / path).exists() for path in unit)
+    missing = [unit for unit in KEPT[:1] if not any((DESKTOP / path).exists() for path in unit)
                and any((kept / path).is_dir() for path in unit)]
     if missing and running() is not None:
         raise Refused(RUNNING, "Claude Desktop started during the switch, nothing changed.")
@@ -631,7 +718,7 @@ def carry_over(current, target):
             mapping[old] = new
     moved = restored = 0
     failed = []
-    for part, step in (("the window's databases", lambda: restore_folders(target)),
+    for part, step in (("the window's storage", lambda: restore_folders(target)),
                        ("the window's storage", lambda: carry_local_storage(mapping, target)),
                        ("Desktop's settings files", lambda: carry_files(mapping))):
         try:
@@ -648,7 +735,7 @@ def carry_over(current, target):
 
 
 def put_back(account, config, version):
-    """Puts the sign-in saved for ACCOUNT in place. True when there was one."""
+    """Puts the sign-in saved for ACCOUNT in place, and on Windows its databases. True when there was a sign-in."""
     copy = saved(account)
     rows = copy["cookies"] if copy and copy.get("cookieVersion") == version else []
     for key in TOKENS:
@@ -657,25 +744,39 @@ def put_back(account, config, version):
         config.update(copy.get("config", {}))
     config[ACCOUNT] = account
     clause, values = where()
-    with contextlib.closing(sqlite3.connect(COOKIES)) as db:
-        columns = {row[1] for row in db.execute("PRAGMA table_info(cookies)")}
-        db.execute("BEGIN IMMEDIATE")
-        db.execute(f"DELETE FROM cookies WHERE {clause}", values)
-        for row in rows:
-            names = [key for key in row if key in columns]
-            db.execute(f"INSERT INTO cookies({', '.join(names)}) VALUES ({', '.join('?' * len(names))})",
-                       [decode(row[key]) for key in names])
-        if running():
-            db.rollback()
-            raise Refused(RUNNING, "Claude Desktop started during the switch, nothing changed.")
-        temporary = CONFIG.with_name("config.json.switch")
-        with open(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(config, indent="\t"))
-        # A stop between the two writes would leave the cookies of one account under the name of the
-        # other, which Desktop takes for another person, so it waits until both are done.
-        with stops_held():
-            db.commit()
-            os.replace(temporary, CONFIG)
+    temporary = CONFIG.with_name("config.json.switch")
+    staged = stage_web(account)
+    aside = []
+    try:
+        with contextlib.closing(sqlite3.connect(COOKIES)) as db:
+            columns = {row[1] for row in db.execute("PRAGMA table_info(cookies)")}
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(f"DELETE FROM cookies WHERE {clause}", values)
+            for row in rows:
+                names = [key for key in row if key in columns]
+                db.execute(f"INSERT INTO cookies({', '.join(names)}) VALUES ({', '.join('?' * len(names))})",
+                           [decode(row[key]) for key in names])
+            if running():
+                db.rollback()
+                raise Refused(RUNNING, "Claude Desktop started during the switch, nothing changed.")
+            with open(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w",
+                      encoding="utf-8") as handle:
+                handle.write(json.dumps(config, indent="\t"))
+            # A stop between the writes would leave the cookies of one account under the name of the other, which
+            # Desktop takes for another person, or the databases of one with the sign-in of the other, so it waits
+            # until all are done.
+            with stops_held():
+                aside = swap_web(staged)
+                try:
+                    db.commit()
+                except BaseException:
+                    unswap_web(aside)
+                    raise
+                os.replace(temporary, CONFIG)
+    finally:
+        drop_staged(staged)
+        temporary.unlink(missing_ok=True)
+    finish_web(aside)
     return bool(rows)
 
 
@@ -698,6 +799,8 @@ def switch(account):
     if CONFIG.with_name("config.json.journal").exists():
         raise Refused(BROKEN, "Claude Desktop didn't finish writing its settings. Start it and quit it once, then "
                               "switch again.")
+    if WINDOWS:
+        repair_web()
     rows, version = read_session(readonly=False)
     current = name(rows, config)
     if current is not None:

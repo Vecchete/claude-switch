@@ -86,11 +86,11 @@ from the Store, Chrome 156), on 09/11/2026, `windows\tests\run.ps1`:
 | Suite | Run against | Checks |
 |---|---|---|
 | `windows/tests/test-switch.py` | `claude-switch.py` | 39 passed |
-| `windows/tests/test-desktop.py` | `desktop.py` and `localstorage.py` | 77 passed |
+| `windows/tests/test-desktop.py` | `desktop.py` and `localstorage.py` | 86 passed |
 | `windows/tests/test-chrome.py` | `claude-switch.py` and `chrome-host.py` | 14 passed |
 | `windows/tests/test-powershell.ps1` | `install.ps1`, `completion.ps1`, `notify.ps1`, `tests/run.ps1` | 29 passed |
 
-`windows/tests/mutants.py` breaks the Windows guards one at a time, in a copy: 65 of 65 killed.
+`windows/tests/mutants.py` breaks the Windows guards one at a time, in a copy: 69 of 69 killed.
 
 `test-desktop.py` writes and reads Desktop's Local Storage with its own code, after LevelDB's formats, so a mistake of
 `localstorage.py` can't hide behind the same mistake in the test. On a copy of the PC's real Local Storage,
@@ -160,9 +160,10 @@ Read on the PC on 09/11/2026, nothing changed:
 - What an account can't hand over stays its own and is never deleted: its sign-in, its Code sessions and their
   results, its drafts. A switch saves the storage of the window with the account it leaves, and what went missing
   while the account was away comes back when it does. Desktop resets part of that storage when it starts signed out
-  (seen on the PC on 22/10/2026). IndexedDB and WebStorage can't be merged, so they come back only when they went
-  whole. A switch made in Desktop's own menu saves nothing, so what comes back is what the last switch of
-  claude-switch saved.
+  (seen on the PC on 22/10/2026). IndexedDB and WebStorage can't be merged, and claude.ai keeps the trusted device
+  key of Remote Control there, so they are the account's: each account gets its own back with its sign-in, put in
+  place with it and undone with it. A switch made in Desktop's own menu saves nothing, so what comes back is what the
+  last switch of claude-switch saved.
 - Local Storage is a LevelDB database. `localstorage.py` reads it as LevelDB does, and adds the changes as one record
   at the end of its log, which LevelDB replays at its next start. It never rewrites a file of the database. A database
   with a checksum that fails is left as it is, and the switch goes on and says what it left.

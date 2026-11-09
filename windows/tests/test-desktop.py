@@ -843,19 +843,22 @@ try:
     result = m.run("switch", ACCOUNT_B, plan={"starts_after_save": True})
     check("Desktop started during the switch: refused with 3, nothing of Desktop changed",
           result.returncode == 3 and m.tree(m.desktop) == kept)
+    shutil.copytree(m.leveldb(), root / "local-storage-aside")
+    shutil.rmtree(m.leveldb())
+    kept = m.tree(m.desktop)
+    result = m.run("switch", ACCOUNT_B, plan={"starts_after_save": True})
+    check("Desktop started during the switch, with Local Storage to put back: refused with 3, nothing changed",
+          result.returncode == 3 and m.tree(m.desktop) == kept)
+    shutil.move(str(root / "local-storage-aside"), str(m.leveldb()))
+
+    # IndexedDB and WebStorage are the account's: B's come back with its sign-in, even when they went whole, and the
+    # copy saved for A keeps its own.
     kept_b = {path: m.tree(m.saved(ACCOUNT_B) / path) for path in (*INDEXEDDB, "WebStorage")}
     kept_a = {path: m.tree(m.saved(ACCOUNT_A) / path) for path in (*INDEXEDDB, "WebStorage")}
     for path in (*INDEXEDDB, "WebStorage"):
         shutil.rmtree(m.desktop / path)
-    kept = m.tree(m.desktop)
-    result = m.run("switch", ACCOUNT_B, plan={"starts_after_save": True})
-    check("Desktop started during the switch, with databases to put back: refused with 3, nothing changed",
-          result.returncode == 3 and m.tree(m.desktop) == kept)
-
-    # A database of the window that went whole comes back whole, and the saved copy of the account left keeps it.
     result = m.run("switch", ACCOUNT_B)
-    check("IndexedDB and WebStorage gone: switched, says what it put back",
-          result.returncode == 0 and m.session() == b_session and "put back" in result.stdout)
+    check("IndexedDB and WebStorage gone: switched", result.returncode == 0 and m.session() == b_session)
     check("IndexedDB and WebStorage gone: B's come back whole",
           {path: m.tree(m.desktop / path) for path in kept_b} == kept_b and all(kept_b.values()))
     check("IndexedDB and WebStorage gone: the copy saved for A keeps its own",
@@ -866,11 +869,14 @@ try:
           and dig(m.read_json("claude_desktop_config.json"), "preferences", "epitaxyPrefs",
                   f"code-projects-order.{ACCOUNT_B}") == ["project-7"])
 
-    # A saved copy with a record that fails its checksum: nothing of it is read, so nothing comes back from it.
+    # A saved copy with a record that fails its checksum: nothing of it is read, so nothing comes back from it. B's
+    # Desktop emptied its IndexedDB in place before: A's comes back with A all the same, and B keeps its own.
     m.desktop_writes({f"consentStoreStitched:v3:{ACCOUNT_A}": None})
     saved_log = m.leveldb(m.saved(ACCOUNT_A)) / "000006.log"
     data = saved_log.read_bytes()
     saved_log.write_bytes(data[:40] + bytes([data[40] ^ 0x20]) + data[41:])
+    (m.desktop / INDEXEDDB[0] / "000003.log").write_text("emptied while on B")
+    emptied = {path: m.tree(m.desktop / path) for path in (*INDEXEDDB, "WebStorage")}
     result = m.run("switch", ACCOUNT_A)
     now = m.view()
     check("a saved copy with a record that fails its checksum: switched, says nothing came back from it",
@@ -878,6 +884,10 @@ try:
     check("a saved copy with a record that fails its checksum: nothing of it read",
           now is not None and f"consentStoreStitched:v3:{ACCOUNT_A}" not in now
           and not any(key.startswith("!") for key in now))
+    check("IndexedDB emptied in place while on B: A's own back with its sign-in",
+          {path: m.tree(m.desktop / path) for path in kept_a} == kept_a)
+    check("IndexedDB emptied in place while on B: saved with B as B left it",
+          {path: m.tree(m.saved(ACCOUNT_B) / path) for path in emptied} == emptied)
 
     # A settings file it can't write stays as it was, and the others are carried over.
     m.write_json("ccd-session-presets.json", {"byAccount": {ACCOUNT_A: {"presets": []}}})
@@ -894,7 +904,31 @@ try:
     check("a settings file it can't write: the others carried over",
           dig(m.read_json("claude_desktop_config.json"), "preferences", "coworkModelAutoFallbackByAccount", ACCOUNT_B)
           is True and dig(m.read_json("mcp-user-tool-toggles.json"), "owners", ACCOUNT_B) == ["drive:search"])
+    check("back on B: its own IndexedDB, as it left it", {path: m.tree(m.desktop / path) for path in emptied} == emptied)
     check("nothing left aside after all that", m.leftovers() == [])
+
+    # A switch cut in the middle of the swap left a database of Desktop aside: the next switch puts it back first.
+    os.replace(m.desktop / INDEXEDDB[0], m.desktop / f"{INDEXEDDB[0]}.old")
+    (m.desktop / "WebStorage.switching").mkdir()
+    result = m.run("switch", ACCOUNT_A)
+    check("a cut swap: repaired before B is saved", result.returncode == 0 and m.session() == a_session
+          and m.tree(m.saved(ACCOUNT_B) / INDEXEDDB[0]) == emptied[INDEXEDDB[0]])
+    check("a cut swap: nothing left aside", m.leftovers() == [])
+
+    # A swap that fails is undone whole, and the sign-in stays.
+    kept = {path: m.tree(m.desktop / path) for path in (*INDEXEDDB, "WebStorage")}
+    result = m.run("switch", ACCOUNT_B, plan={"fail_replace": "https_claude.ai_0.indexeddb.blob.switching"})
+    check("a failed swap: refused", result.returncode not in (0, 3, 4, 6))
+    check("a failed swap: the sign-in and the databases stay", m.session() == a_session
+          and m.config()["lastKnownAccountUuid"] == ACCOUNT_A
+          and {path: m.tree(m.desktop / path) for path in kept} == kept)
+    check("a failed swap: nothing left aside", m.leftovers() == [])
+
+    # Local Storage gone whole comes back whole from the copy saved for the account.
+    shutil.rmtree(m.leveldb())
+    result = m.run("switch", ACCOUNT_B)
+    check("Local Storage gone: B's comes back whole, says so", result.returncode == 0 and m.session() == b_session
+          and "1 put back" in result.stdout and js(m.view(), DRAFT_B) == {"text": "B's draft"})
 
     # Two accounts of one organization: what A keeps under its scope goes to C's, as to any other account.
     m.run("switch", ACCOUNT_A)

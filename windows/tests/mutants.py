@@ -125,15 +125,24 @@ MUTANTS = [
     ("unreadable-copy-stops-all", "desktop", "desktop",
      "            problems.append(f\"Not put back, its saved copy can't be read: the window's storage ({error}).\")\n",
      "            raise\n"),
-    ("databases-not-put-back", "desktop", "desktop", "    for unit in missing:\n", "    for unit in []:\n"),
+    ("local-storage-not-put-back", "desktop", "desktop", "    for unit in missing:\n", "    for unit in []:\n"),
     ("copy-drops-lost-databases", "desktop", "desktop",
-     "    for unit in RESTORED:\n        if not any((fresh / path).exists() for path in unit):\n",
+     "    for unit in KEPT:\n        if not any((fresh / path).exists() for path in unit):\n",
      "    for unit in ():\n        if not any((fresh / path).exists() for path in unit):\n"),
+    # IndexedDB and WebStorage, which go with the sign-in.
+    ("databases-not-swapped", "desktop", "desktop",
+     "    if not WINDOWS or not source.is_dir():\n        return []\n", "    if True:\n        return []\n"),
+    ("no-repair", "desktop", "desktop", "    if WINDOWS:\n        repair_web()\n", ""),
+    ("swap-not-undone", "desktop", "desktop",
+     "    except BaseException:\n        unswap_web(aside)\n        raise\n    return aside\n",
+     "    except BaseException:\n        raise\n    return aside\n"),
+    ("config-left-aside", "desktop", "desktop",
+     "        drop_staged(staged)\n        temporary.unlink(missing_ok=True)\n", "        drop_staged(staged)\n"),
     # Desktop starting in the middle of a switch.
     ("written-while-open", "desktop", "desktop",
      "    if changes and running() is not None:\n"
      '        raise Refused(RUNNING, "Claude Desktop started during the switch, nothing changed.")\n', ""),
-    ("databases-put-back-while-open", "desktop", "desktop",
+    ("local-storage-put-back-while-open", "desktop", "desktop",
      "    if missing and running() is not None:\n", "    if False:\n"),
     ("refusal-swallowed", "desktop", "desktop", "        except Refused:\n            raise\n", ""),
     # Reading Desktop's Local Storage as LevelDB does.
