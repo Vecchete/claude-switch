@@ -108,10 +108,10 @@ ORIGIN = "https://claude.ai"
 CARRIED = ("LSS-persisted.", "persisted.ccd-session-presets.")
 # The values that keep settings per account inside them, under the account's id or its id and its organization's.
 SCOPED = ("dframe-store", "LSS-persisted.")
-# Not carried, wherever they are kept: the bypass permissions gate and what auto mode warned of and denied, which each
-# account answers for itself; what claude.ai found the account may use, which it finds again for the next one; and the
-# auto resume of the sessions of the account left, which the next one doesn't have.
-NOT_CARRIED = ("bypassPermissions", "epitaxy-auto-", "ultrathinkAvailable", "autoResumeRateLimit")
+# Not carried, wherever they are kept: the bypass permissions gate and what auto mode and the permission modes warned
+# of and denied, which each account answers for itself; what claude.ai found the account may use, which it finds again
+# for the next one; and the auto resume of the sessions of the account left, which the next one doesn't have.
+NOT_CARRIED = ("bypassPermissions", "epitaxy-auto-", "perm-mode-ack", "ultrathinkAvailable", "autoResumeRateLimit")
 # The keys of a map inside a value that name what belongs to one account: its id, its organization's, one of its Code
 # sessions (local_<id>), or a pair of them.
 OWNED = re.compile(f"(?:[a-z]+[_:])?{ID}(?:[/:]{ID})?")

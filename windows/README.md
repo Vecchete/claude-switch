@@ -90,7 +90,7 @@ from the Store, Chrome 156), on 09/11/2026, `windows\tests\run.ps1`:
 | `windows/tests/test-chrome.py` | `claude-switch.py` and `chrome-host.py` | 14 passed |
 | `windows/tests/test-powershell.ps1` | `install.ps1`, `completion.ps1`, `notify.ps1`, `tests/run.ps1` | 29 passed |
 
-`windows/tests/mutants.py` breaks the Windows guards one at a time, in a copy: 69 of 69 killed.
+`windows/tests/mutants.py` breaks the Windows guards one at a time, in a copy: 70 of 70 killed.
 
 `test-desktop.py` writes and reads Desktop's Local Storage with its own code, after LevelDB's formats, so a mistake of
 `localstorage.py` can't hide behind the same mistake in the test. On a copy of the PC's real Local Storage,
@@ -154,9 +154,10 @@ Read on the PC on 09/11/2026, nothing changed:
   and groups, the order of the projects, the presets of the Code tab and their defaults. A switch copies that to the
   next account, so it starts where the last one was. The pins and the starred sessions are kept for every account, so
   they stay as they are.
-- Each account keeps its own bypass permissions gate and what auto mode warned it of, the connectors it connected on
-  claude.ai and what claude.ai found it may use. A setting carried over keeps the defaults of the next account's own
-  environments.
+- Each account keeps its own bypass permissions gate and what auto mode and the permission modes warned it of, the
+  connectors it connected on claude.ai and what claude.ai found it may use. The permission mode picked for each folder
+  goes over, and the gate still decides whether bypass is offered. A setting carried over keeps the defaults of the
+  next account's own environments.
 - What an account can't hand over stays its own and is never deleted: its sign-in, its Code sessions and their
   results, its drafts. A switch saves the storage of the window with the account it leaves, and what went missing
   while the account was away comes back when it does. Desktop resets part of that storage when it starts signed out

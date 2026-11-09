@@ -91,6 +91,8 @@ IN_LOG = {
     f"LSS-persisted.ultrathinkAvailable.claude-x.{ACCOUNT_A}": {"value": True},
     f"LSS-persisted.autoResumeRateLimit.{ACCOUNT_A}": {"value": {SESSION_A: {"on": True}}},
     f"LSS-persisted.epitaxy-auto-mode-denial-count.{ACCOUNT_A}": {"value": 2},
+    f"LSS-persisted.perm-mode-acks.{ACCOUNT_A}": {"value": ["bypassPermissions"]},
+    f"LSS-persisted.epitaxy-folder-permission-mode.{ACCOUNT_A}": {"value": {"C:\\work": "bypassPermissions"}},
     "epitaxy.terminalTabs.v1": {"state": {"bySession": {SESSION_A: {"tabs": 2}, SESSION_X: {"tabs": 9}}}},
     "spa:locale": "en-US",
     "ant-text": "pinned \u2713 \u00e9",
@@ -723,9 +725,11 @@ try:
                                                     ENV_B: {"modelId": "b-model"}}}})
     check("to B: the sections the Code tab keeps open",
           dig(js(after, "LSS-persisted.dframe-code-sections"), "value", SCOPE_B) == {"open": ["today"]})
-    check("to B: only B's copies were added, not A's connections, its auto mode, its sessions' auto resume, nor what "
-          "claude.ai found A may use", set(after or {}) - set(before) == {
-              ORDER_B, f"LSS-persisted.code-sessions-status-filter.{ACCOUNT_B}", f"persisted.ccd-session-presets.{ACCOUNT_B}"})
+    check("to B: only B's copies were added, the permission mode of each folder among them, not A's connections, what "
+          "auto mode and the permission modes warned it of, its sessions' auto resume, nor what claude.ai found A may "
+          "use", set(after or {}) - set(before) == {
+              ORDER_B, f"LSS-persisted.code-sessions-status-filter.{ACCOUNT_B}", f"persisted.ccd-session-presets.{ACCOUNT_B}",
+              f"LSS-persisted.epitaxy-folder-permission-mode.{ACCOUNT_B}"})
     check("to B: A's draft and its consent stay A's, and nothing else changed",
           {key for key in before if dig(after, key) != before[key]} ==
           {"dframe-store", "LSS-persisted.dframe-code-sections", f"persisted.ccd-session-presets.{ACCOUNT_B}.{ORG_B}"})
