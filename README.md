@@ -66,7 +66,9 @@ claude-switch: The sign-in of work ends on 09/11/2026, in 7 days. Sign in again 
   tab. Desktop has to be closed for that, so an open Desktop is restarted when you say so.
 
 Everything else stays: MCP logins, settings, projects, sessions, Chrome and Desktop preferences. Each
-account keeps its own history on claude.ai, and it comes back with the account.
+account keeps its own history on claude.ai, and it comes back with the account. On Windows the settings
+Claude Desktop keeps per account go over to the next account too, and what an account can't hand over
+comes back with it: [windows/](windows/README.md).
 
 The accounts live in `~/.claude-accounts`, one file per account, readable only by you. They hold
 logins, so they never go in this repository.

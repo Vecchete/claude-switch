@@ -20,14 +20,19 @@ lastKnownAccountUuid always moves with the rest: when it names the account Deskt
 on as before, and otherwise it takes the change for another person and resets connectors and tool permissions (seen
 in Desktop 4.4212.0).
 
-On Windows the preferences of the window go with the account too: its web storage (Local Storage, Session Storage,
-IndexedDB, WebStorage), which holds the sidebar's sorting and groups, the presets and the drafts. Desktop keeps one
-copy for every account and resets part of it when it starts signed out. An account with no copy saved yet keeps the
-preferences in place.
+On Windows nothing of an account is lost at a switch, and its configuration goes over to the next one. The window's
+storage (Local Storage, Session Storage, IndexedDB, WebStorage) stays in place for every account, so the pinned
+projects, the starred sessions and the sidebar's sorting stay as they are. What Desktop keeps in it under the account
+left, its sidebar sections and groups, its project order and its presets, is copied to the next account, as are the
+settings its own files keep per account. What an account can't hand over, its sign-in, its Code
+sessions, its Remote Control environments and its drafts, stays its own: the storage is saved with the account left,
+and what goes missing while it is away comes back when it does, a database that can't be merged when it went whole.
+The bypass permissions gate and what auto mode warned of stay per account, as do what an account connected on
+claude.ai and what claude.ai found it may use.
 
 The open session is named by its cookies among the saved ones, else by lastKnownAccountUuid. A session nobody can
 name is never saved or replaced. The saved sign-ins are in ~/.claude-accounts/.desktop, one file per account (and on
-Windows a folder of preferences beside it), and only you can read them.
+Windows the window's storage of the account beside it), and only you can read them.
 
     desktop.py status            what Desktop is on, as JSON
     desktop.py switch ACCOUNT    save the sign-in under its account, put back the one of ACCOUNT
@@ -39,6 +44,8 @@ Desktop is open and runs this switch, through one of its Code sessions or its te
 """
 import base64
 import contextlib
+import copy
+import importlib.util
 import json
 import os
 import pathlib
@@ -85,11 +92,38 @@ SESSION = ("sessionKey", "sessionKeyLC", "routingHint", "lastActiveOrg", "sessio
 KEYS = ("sessionKey", "sessionKeyV3")
 TOKENS = ("oauth:tokenCacheV2", "oauth:tokenCache")
 ACCOUNT = "lastKnownAccountUuid"
-UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+ID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+UUID = re.compile(ID)
 RUNNING, UNNAMED, BROKEN, INSIDE = 3, 4, 5, 6
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if WINDOWS else 0
-# Windows: the web storage of the window, which holds its preferences.
+# Windows: the web storage of the window, which holds its preferences. One for every account, as on Linux.
 WEB = ("Local Storage", "Session Storage", "IndexedDB", "WebStorage")
+LOCAL_STORAGE = DESKTOP / "Local Storage" / "leveldb"
+ORIGIN = "https://claude.ai"
+# The keys of the window's Local Storage that are settings named after an account (or its organization), which go
+# over to the next account: the persisted preferences and the presets of the Code tab. Not the rows of the connectors
+# list, which say what the account connected on claude.ai.
+CARRIED = ("LSS-persisted.", "persisted.ccd-session-presets.")
+# The values that keep settings per account inside them, under the account's id or its id and its organization's.
+SCOPED = ("dframe-store", "LSS-persisted.")
+# Not carried, wherever they are kept: the bypass permissions gate and what auto mode warned of and denied, which each
+# account answers for itself; what claude.ai found the account may use, which it finds again for the next one; and the
+# auto resume of the sessions of the account left, which the next one doesn't have.
+NOT_CARRIED = ("bypassPermissions", "epitaxy-auto-", "ultrathinkAvailable", "autoResumeRateLimit")
+# The keys of a map inside a value that name what belongs to one account: its id, its organization's, one of its Code
+# sessions (local_<id>), or a pair of them.
+OWNED = re.compile(f"(?:[a-z]+[_:])?{ID}(?:[/:]{ID})?")
+# What names an environment or a session of one account inside a setting, as the defaults of the Code tab's presets do
+# (bridge:env_<id>, cloud:environment:env_<id>, seen on the PC on 2026-11-09). Its ids mean nothing to another
+# account, so a setting carried over keeps the next account's own.
+BOUND = re.compile(rf"(?:env|session)_[0-9A-Za-z]{{16,}}|local_{ID}")
+# Desktop's own files of settings kept per account, carried the same way. remote-control-state.json and
+# ant-device-registry.json are not among them: they hold what claude.ai registered for one account.
+CARRIED_FILES = ("claude_desktop_config.json", "ccd-session-presets.json", "mcp-user-tool-toggles.json")
+# The databases of the window that can't be merged, each with the folders that go with it: claude.ai's IndexedDB is
+# the two Chromium deletes when it clears the site. One that went whole comes back whole.
+RESTORED = (("Local Storage/leveldb",), ("WebStorage",),
+            ("IndexedDB/https_claude.ai_0.indexeddb.leveldb", "IndexedDB/https_claude.ai_0.indexeddb.blob"))
 # Windows: how long a quit waits for the helpers that outlive Desktop to let go of its files.
 FILES_FREE_SECONDS = 15
 # A program of Claude Desktop: the app, or the Claude Code its Code tab runs.
@@ -320,101 +354,301 @@ def saved_web(account):
 
 
 def save_web(account):
-    """Windows: the preferences of the window, saved beside the sign-in of ACCOUNT. The copy is made aside and renamed
-    after, so a copy that fails keeps the previous one."""
+    """Windows: the window's storage as the account left had it, saved beside its sign-in, from which what it loses
+    while away comes back. A database the window no longer has is kept from the copy saved before, so its only copy is
+    never dropped. The copy is made aside and renamed after, so a copy that fails keeps the previous one."""
     if not WINDOWS:
         return
     target = saved_web(account)
-    copy, old = target.with_name(target.name + ".tmp"), target.with_name(target.name + ".old")
-    shutil.rmtree(copy, ignore_errors=True)
-    copy.mkdir(parents=True)
+    fresh, old = target.with_name(target.name + ".tmp"), target.with_name(target.name + ".old")
+    shutil.rmtree(fresh, ignore_errors=True)
+    fresh.mkdir(parents=True)
     for name in WEB:
         if (DESKTOP / name).is_dir():
-            shutil.copytree(DESKTOP / name, copy / name)
+            shutil.copytree(DESKTOP / name, fresh / name)
+    for unit in RESTORED:
+        if not any((fresh / path).exists() for path in unit):
+            for path in unit:
+                if (target / path).is_dir():
+                    shutil.copytree(target / path, fresh / path)
     shutil.rmtree(old, ignore_errors=True)
     if target.exists():
         os.replace(target, old)
-    os.replace(copy, target)
+    os.replace(fresh, target)
     shutil.rmtree(old, ignore_errors=True)
 
 
-def stage_web(account):
-    """Windows: the preferences saved for ACCOUNT, copied beside Desktop's own and ready to go in, as (folder, copy)
-    pairs: no copy for a folder they lack, which goes. [] when ACCOUNT has none saved, the preferences in place stay."""
-    source = saved_web(account)
-    if not WINDOWS or not source.is_dir():
-        return []
-    staged = []
+def localstorage():
+    """localstorage.py, next to this file: python -I puts no folder of a script on the path."""
+    spec = importlib.util.spec_from_file_location("localstorage", pathlib.Path(__file__).with_name("localstorage.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def organization(account):
+    """The organization Desktop keeps the settings of ACCOUNT under: the one it keeps its Code sessions under, else the
+    one its saved login names (they were the same on the PC, 2026-11-09). None when neither says."""
+    folders = [path for path in (DESKTOP / "claude-code-sessions" / account).glob("*")
+               if path.is_dir() and UUID.fullmatch(path.name)]
+    if folders:
+        return max(folders, key=lambda path: path.stat().st_mtime).name
+    for path in STORE.glob("*.json"):
+        try:
+            oauth = json.loads(path.read_text(encoding="utf-8"))["oauthAccount"]
+            if oauth["accountUuid"] == account and UUID.fullmatch(oauth["organizationUuid"]):
+                return oauth["organizationUuid"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return None
+
+
+def sessions_of(account):
+    """The ids of the Code sessions of ACCOUNT."""
+    return {found for path in (DESKTOP / "claude-code-sessions" / account).rglob("local_*.json")
+            for found in UUID.findall(path.stem)}
+
+
+def retargetable(key, mapping):
+    """True when every id KEY names is one MAPPING moves to the next account."""
+    ids = UUID.findall(key)
+    return bool(ids) and all(found in mapping for found in ids)
+
+
+def retarget(key, mapping):
+    for old, new in mapping.items():
+        key = key.replace(old, new)
+    return key
+
+
+def carry_scopes(value, mapping):
+    """Copies, at any depth of VALUE, what is kept under a key that names the account left, by its id or its id and its
+    organization's, alone or after a name (code-projects-order.<id> in claude_desktop_config.json), to the same key of
+    the next account. True when something changed."""
+    changed = False
+    if isinstance(value, dict):
+        for key in list(value):
+            if any(marker in key for marker in NOT_CARRIED):
+                continue
+            changed |= carry_scopes(value[key], mapping)
+            if retargetable(key, mapping):
+                new = retarget(key, mapping)
+                carried = carried_value(value.get(new), value[key])
+                if value.get(new) != carried:
+                    value[new] = carried
+                    changed = True
+    elif isinstance(value, list):
+        for item in value:
+            changed |= carry_scopes(item, mapping)
+    return changed
+
+
+def carried_value(kept, carried):
+    """CARRIED, a setting of the account left, in place of KEPT, the next account's: at any depth of their objects, what
+    names one of the next account's environments or sessions stays where CARRIED has nothing of it."""
+    if not isinstance(kept, dict) or not isinstance(carried, dict):
+        return copy.deepcopy(carried)
+    value = {key: carried_value(kept[key], item) if key in kept else copy.deepcopy(item) for key, item in carried.items()}
+    for key, item in kept.items():
+        if key not in carried:
+            own = copy.deepcopy(item) if BOUND.search(key) else bound_part(item)
+            if own is not None:
+                value[key] = own
+    return value
+
+
+def bound_part(value):
+    """What VALUE keeps under keys that name an environment or a session, at any depth. None when it keeps nothing."""
+    if not isinstance(value, dict):
+        return None
+    part = {key: copy.deepcopy(item) if BOUND.search(key) else bound_part(item) for key, item in value.items()}
+    return {key: item for key, item in part.items() if item is not None} or None
+
+
+def owned(key, own):
+    """True when KEY names what belongs to one account alone: OWN holds its id, its organization's and its sessions'."""
+    found = set(UUID.findall(key))
+    return bool(found) and found <= own
+
+
+def restore_entries(live, kept, own):
+    """Puts back in LIVE, at any depth, what KEPT holds under a key of the account coming back and LIVE lost: its scope,
+    or one of its sessions. True when something changed."""
+    changed = False
+    if isinstance(live, dict) and isinstance(kept, dict):
+        for key, value in kept.items():
+            if key in live:
+                changed |= restore_entries(live[key], value, own)
+            elif OWNED.fullmatch(key) and owned(key, own):
+                live[key] = copy.deepcopy(value)
+                changed = True
+    return changed
+
+
+def as_json(text):
     try:
-        for name in WEB:
-            copy = DESKTOP / f"{name}.switching"
-            shutil.rmtree(copy, ignore_errors=True)
-            if (source / name).is_dir():
-                shutil.copytree(source / name, copy)
-                staged.append((name, copy))
-            else:
-                staged.append((name, None))
-    except BaseException:
-        drop_staged(staged)
-        raise
-    return staged
+        return json.loads(text)
+    except ValueError:
+        return None
 
 
-def drop_staged(staged):
-    for _, copy in staged:
-        if copy is not None:
-            shutil.rmtree(copy, ignore_errors=True)
+def as_text(value):
+    """VALUE as the window writes it, JSON.stringify's compact form."""
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
 
 
-def swap_web(staged):
-    """Puts the staged preferences in place: each folder of Desktop goes aside and its copy takes its place, all undone
-    when one fails. Returns what went aside, to remove once the switch is written."""
-    aside = []
+def carry_local_storage(mapping, target):
+    """The settings of the window kept under the account left go to TARGET, and what TARGET lost while away comes back
+    from the copy saved when it was left. Returns how many keys moved, how many came back, and what went wrong with
+    the saved copy, which leaves the carrying over to go on."""
+    ls = localstorage()
+    if not (LOCAL_STORAGE / "CURRENT").is_file():
+        return 0, 0, []
+    db = ls.Database(LOCAL_STORAGE)
+    live = db.origin(ORIGIN)
+    changes = {}
+    if mapping:
+        for key, value in live.items():
+            data = as_json(value) if key.startswith(SCOPED) else None
+            if data is not None and carry_scopes(data, mapping):
+                changes[key] = as_text(data)
+        for key, value in live.items():
+            if (key.startswith(CARRIED) and retargetable(key, mapping)
+                    and not any(marker in key for marker in NOT_CARRIED)):
+                new, carried = retarget(key, mapping), changes.get(key, value)
+                kept = changes.get(new, live.get(new))
+                data, kept_data = as_json(carried), as_json(kept) if kept is not None else None
+                if isinstance(data, dict) and isinstance(kept_data, dict):
+                    merged = carried_value(kept_data, data)
+                    if merged != kept_data:
+                        changes[new] = as_text(merged)
+                elif kept != carried:
+                    changes[new] = carried
+    moved = len(changes)
+    restored = 0
+    problems = []
+    kept_folder = saved_web(target) / "Local Storage" / "leveldb"
+    kept = {}
+    if (kept_folder / "CURRENT").is_file():
+        try:
+            kept = ls.Database(kept_folder).origin(ORIGIN)
+        except Exception as error:
+            problems.append(f"Not put back, its saved copy can't be read: the window's storage ({error}).")
+    if kept:
+        own = {target, organization(target), *sessions_of(target)} - {None}
+        for key, value in kept.items():
+            now = changes.get(key, live.get(key))
+            if now is None:
+                if owned(key, own):
+                    changes[key] = value
+                    restored += 1
+                continue
+            data = as_json(now)
+            if isinstance(data, dict) and restore_entries(data, as_json(value), own):
+                changes[key] = as_text(data)
+                restored += 1
+    # Desktop opens its Local Storage seconds after it starts, so one that hasn't started by now finds the write done.
+    if changes and running() is not None:
+        raise Refused(RUNNING, "Claude Desktop started during the switch, nothing changed.")
+    db.write(ORIGIN, changes)
+    return moved, restored, problems
+
+
+def carry_files(mapping):
+    """The settings Desktop's own files keep per account go from the account left to the next one: the preferences of
+    claude_desktop_config.json, the presets and the tool toggles. Not the bypass permissions gate. Returns how many
+    files changed, none put back, and the ones that could not be written, which stay as they were. A file that can't be
+    read is Desktop's, and is left alone."""
+    changed, failed = 0, []
+    for name in CARRIED_FILES if mapping else ():
+        path = DESKTOP / name
+        try:
+            text = path.read_text(encoding="utf-8")
+            data = json.loads(text)
+        except (OSError, ValueError):
+            continue
+        settings = data.get("preferences") if name == "claude_desktop_config.json" and isinstance(data, dict) else data
+        if not isinstance(settings, dict) or not carry_scopes(settings, mapping):
+            continue
+        indent = re.match(r"\{\r?\n([ \t]+)", text)
+        try:
+            write_file(path, json.dumps(data, indent=indent.group(1) if indent else None, ensure_ascii=False)
+                       + ("\n" if text.endswith("\n") else ""))
+        except OSError as error:
+            failed.append(f"Not carried over, left as it was: {name} ({error}).")
+            continue
+        changed += 1
+    return changed, 0, failed
+
+
+def write_file(path, text):
+    """TEXT in PATH, whole or not at all."""
+    temporary = path.with_name(path.name + ".switch")
     try:
-        for name, copy in staged:
-            live, old = DESKTOP / name, DESKTOP / f"{name}.old"
-            shutil.rmtree(old, ignore_errors=True)
-            if live.exists():
-                os.replace(live, old)
-                aside.append((live, old, copy))
-            else:
-                aside.append((live, None, copy))
-            if copy is not None:
-                os.replace(copy, live)
-    except BaseException:
-        unswap_web(aside)
-        raise
-    return aside
+        with open(temporary, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
-def unswap_web(aside):
-    """Desktop's own folders back where they were."""
-    for live, old, copy in reversed(aside):
-        if copy is not None and not copy.exists():
-            shutil.rmtree(live, ignore_errors=True)
-        if old is not None and old.exists() and not live.exists():
-            os.replace(old, live)
+def restore_folders(target):
+    """The databases of the window that can't be merged come back whole from the copy saved for TARGET, when they went
+    whole. Returns none carried over, how many came back, and no problem: a copy that fails raises."""
+    kept = saved_web(target)
+    missing = [unit for unit in RESTORED if not any((DESKTOP / path).exists() for path in unit)
+               and any((kept / path).is_dir() for path in unit)]
+    if missing and running() is not None:
+        raise Refused(RUNNING, "Claude Desktop started during the switch, nothing changed.")
+    for unit in missing:
+        copies = [(kept / path, DESKTOP / path, (DESKTOP / path).with_name((DESKTOP / path).name + ".switch"))
+                  for path in unit if (kept / path).is_dir()]
+        try:
+            for source, _, temporary in copies:
+                shutil.rmtree(temporary, ignore_errors=True)
+                shutil.copytree(source, temporary)
+            for _, live, temporary in copies:
+                os.replace(temporary, live)
+        finally:
+            for _, _, temporary in copies:
+                shutil.rmtree(temporary, ignore_errors=True)
+    return 0, len(missing), []
 
 
-def finish_web(aside):
-    for _, old, _ in aside:
-        if old is not None:
-            shutil.rmtree(old, ignore_errors=True)
-
-
-def repair_web():
-    """Windows: a switch cut in the middle of the swap left a folder of Desktop aside, which comes back. The copies it
-    left go."""
-    for name in WEB:
-        live, old, copy = DESKTOP / name, DESKTOP / f"{name}.old", DESKTOP / f"{name}.switching"
-        if old.is_dir() and not live.exists():
-            os.replace(old, live)
-        shutil.rmtree(old, ignore_errors=True)
-        shutil.rmtree(copy, ignore_errors=True)
+def carry_over(current, target):
+    """Windows: the configuration of the account left goes over to TARGET, and what TARGET lost while away comes back.
+    What an account can't hand over, its sign-in, its Code sessions, its Remote Control environments and its drafts,
+    stays its own and is never deleted: the copy saved when it was left brings back what went missing. A part that
+    fails is left as it was, the rest of the switch goes on, and the message says which part and why."""
+    if not WINDOWS:
+        return ""
+    mapping = {}
+    if current is not None and current != target:
+        mapping[current] = target
+        old, new = organization(current), organization(target)
+        if old and new:
+            # Two accounts of one organization keep it: their scopes still move from one account to the other.
+            mapping[old] = new
+    moved = restored = 0
+    failed = []
+    for part, step in (("the window's databases", lambda: restore_folders(target)),
+                       ("the window's storage", lambda: carry_local_storage(mapping, target)),
+                       ("Desktop's settings files", lambda: carry_files(mapping))):
+        try:
+            more, back, problems = step()
+        except Refused:
+            raise
+        except Exception as error:
+            failed.append(f"Not carried over, left as it was: {part} ({error}).")
+            continue
+        moved, restored, failed = moved + more, restored + back, failed + problems
+    counts = [f"{moved} carried over" if moved else "", f"{restored} put back" if restored else ""]
+    return "\n".join(filter(None, [
+        f"Claude Desktop's settings: {', '.join(filter(None, counts))}." if moved or restored else "", *failed]))
 
 
 def put_back(account, config, version):
-    """Puts the sign-in saved for ACCOUNT in place, and on Windows its preferences. True when there was a sign-in."""
+    """Puts the sign-in saved for ACCOUNT in place. True when there was one."""
     copy = saved(account)
     rows = copy["cookies"] if copy and copy.get("cookieVersion") == version else []
     for key in TOKENS:
@@ -423,37 +657,25 @@ def put_back(account, config, version):
         config.update(copy.get("config", {}))
     config[ACCOUNT] = account
     clause, values = where()
-    staged = stage_web(account)
-    aside = []
-    try:
-        with contextlib.closing(sqlite3.connect(COOKIES)) as db:
-            columns = {row[1] for row in db.execute("PRAGMA table_info(cookies)")}
-            db.execute("BEGIN IMMEDIATE")
-            db.execute(f"DELETE FROM cookies WHERE {clause}", values)
-            for row in rows:
-                names = [key for key in row if key in columns]
-                db.execute(f"INSERT INTO cookies({', '.join(names)}) VALUES ({', '.join('?' * len(names))})",
-                           [decode(row[key]) for key in names])
-            if running():
-                db.rollback()
-                raise Refused(RUNNING, "Claude Desktop started during the switch, nothing changed.")
-            temporary = CONFIG.with_name("config.json.switch")
-            with open(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w",
-                      encoding="utf-8") as handle:
-                handle.write(json.dumps(config, indent="\t"))
-            # A stop between the two writes would leave the cookies of one account under the name of the
-            # other, which Desktop takes for another person, so it waits until both are done.
-            with stops_held():
-                aside = swap_web(staged)
-                try:
-                    db.commit()
-                except BaseException:
-                    unswap_web(aside)
-                    raise
-                os.replace(temporary, CONFIG)
-    finally:
-        drop_staged(staged)
-    finish_web(aside)
+    with contextlib.closing(sqlite3.connect(COOKIES)) as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(cookies)")}
+        db.execute("BEGIN IMMEDIATE")
+        db.execute(f"DELETE FROM cookies WHERE {clause}", values)
+        for row in rows:
+            names = [key for key in row if key in columns]
+            db.execute(f"INSERT INTO cookies({', '.join(names)}) VALUES ({', '.join('?' * len(names))})",
+                       [decode(row[key]) for key in names])
+        if running():
+            db.rollback()
+            raise Refused(RUNNING, "Claude Desktop started during the switch, nothing changed.")
+        temporary = CONFIG.with_name("config.json.switch")
+        with open(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(config, indent="\t"))
+        # A stop between the two writes would leave the cookies of one account under the name of the
+        # other, which Desktop takes for another person, so it waits until both are done.
+        with stops_held():
+            db.commit()
+            os.replace(temporary, CONFIG)
     return bool(rows)
 
 
@@ -476,16 +698,16 @@ def switch(account):
     if CONFIG.with_name("config.json.journal").exists():
         raise Refused(BROKEN, "Claude Desktop didn't finish writing its settings. Start it and quit it once, then "
                               "switch again.")
-    if WINDOWS:
-        repair_web()
     rows, version = read_session(readonly=False)
     current = name(rows, config)
     if current is not None:
         save(rows, version, config, current)
         save_web(current)
+    carried = carry_over(current, account)
     if put_back(account, config, version):
-        return f"Claude Desktop is on {who}."
-    return f"Claude Desktop is signed out: sign in to it once as {who}, it follows the switch from then on."
+        return "\n".join(filter(None, [f"Claude Desktop is on {who}.", carried]))
+    return "\n".join(filter(None, [f"Claude Desktop is signed out: sign in to it once as {who}, it follows the switch "
+                                   "from then on.", carried]))
 
 
 def shell_word(text):

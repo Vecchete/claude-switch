@@ -95,7 +95,8 @@ if (($env:Path -split ';') -notcontains $Bin) {
 }
 
 Install-File (Join-Path $Windows 'claude-switch.cmd') (Join-Path $Bin 'claude-switch.cmd')
-foreach ($file in 'claude-switch.py', 'chrome-host.py', 'chrome-host.cmd', 'desktop.py', 'notify.ps1', 'completion.ps1') {
+foreach ($file in 'claude-switch.py', 'chrome-host.py', 'chrome-host.cmd', 'desktop.py', 'localstorage.py', 'notify.ps1',
+    'completion.ps1') {
     Install-File (Join-Path $Windows $file) (Join-Path $Share $file)
 }
 foreach ($file in 'manifest.json', 'worker.js') {
