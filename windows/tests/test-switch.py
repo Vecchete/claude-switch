@@ -205,6 +205,46 @@ try:
     result = run("a@example.com", FAKE_DESKTOP_STATUS="3")
     check("open Desktop, no terminal: left alone, said how to bring it along",
           "Close it and run claude-switch a@example.com to bring it along." in result.stdout)
+
+    if WINDOWS:
+        # A Claude Code that keeps its login in the Credential Manager is never switched: the files aren't its login.
+        conf = read(config)
+        write(config, dict(conf, cachedGrowthBookFeatures={"tengu_windows_credman": True}))
+        before = credentials.read_bytes(), config.read_bytes()
+        result = run("second")
+        check("Credential Manager: the switch is refused", result.returncode == 1 and "Credential Manager" in result.stderr)
+        result = run("list")
+        check("Credential Manager: list still lists, and says why", result.returncode == 0
+              and "a@example.com" in result.stdout and "Credential Manager" in result.stderr)
+        check("Credential Manager: nothing changed", (credentials.read_bytes(), config.read_bytes()) == before)
+        write(config, conf)
+
+        # A Remote Control server outside Desktop is found, and without a terminal it is left alone.
+        probe = root / "remote-control.py"
+        probe.write_text(
+            "import importlib.util, json, subprocess, sys\n"
+            "spec = importlib.util.spec_from_file_location('claude_switch', sys.argv[1])\n"
+            "module = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(module)\n"
+            "processes, calls = json.loads(sys.argv[2]), []\n"
+            "def run(command, **options):\n"
+            "    calls.append(command[0])\n"
+            "    return subprocess.CompletedProcess(command, 0, json.dumps(processes).encode(), b'')\n"
+            "module.subprocess.run = run\n"
+            "print(json.dumps(module.remote_control_servers()))\n"
+            "module.remote_control_switch('second')\n"
+            "print(json.dumps(calls))\n", encoding="utf-8")
+        servers = [{"ProcessId": 11, "ExecutablePath": r"C:\u\AppData\Local\Microsoft\WinGet\Links\claude.exe",
+                    "CommandLine": '"C:\\u\\claude.exe" remote-control --permission-mode bypassPermissions'},
+                   {"ProcessId": 12, "ExecutablePath": r"C:\u\AppData\Local\Claude-Data\claude_x\claude-code\2\claude.exe",
+                    "CommandLine": "claude.exe remote-control"},
+                   {"ProcessId": 13, "ExecutablePath": r"C:\u\.local\bin\claude.exe", "CommandLine": "claude.exe --resume"}]
+        result = subprocess.run([sys.executable, "-I", str(probe), str(SCRIPT), json.dumps(servers)], env=base,
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        lines = result.stdout.splitlines()
+        check("Remote Control: only the server outside Desktop", lines[:1] == ["[11]"])
+        check("Remote Control, no terminal: left alone", "stays on the account it started on" in result.stdout
+              and lines[-1:] == ['["powershell.exe", "powershell.exe"]'])
 finally:
     shutil.rmtree(root, ignore_errors=True)
 

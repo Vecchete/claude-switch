@@ -352,7 +352,8 @@ def serve():
 def serve_pipe():
     """serve() on Windows, on the named pipe of the user. A pipe another host holds stays its own, so a second host
     waits until the first one is gone."""
-    # TODO(windows): try it with two Chrome profiles, and with a claude-switch run while Chrome starts.
+    # A second host, and a switch made while Chrome is closed, pass windows/tests/test-chrome.py with a fake extension.
+    # TODO(windows): try it with the real Chrome, two profiles included.
     while True:
         try:
             server = pipes.Listener(PIPE, family="AF_PIPE")

@@ -80,6 +80,12 @@ CLAUDE_SECONDS = 60
 STOPS = tuple(getattr(signal, name) for name in ("SIGTERM", "SIGINT", "SIGHUP", "SIGBREAK") if hasattr(signal, name))
 # A claude run in the background opens no console window on Windows.
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if WINDOWS else 0
+# Windows: a Remote Control server, and the programs of Claude Desktop, which has a sign-in of its own.
+REMOTE_CONTROL = re.compile(r"\sremote-control(\s|$)")
+DESKTOP_PROGRAM = re.compile(r"\\WindowsApps\\Claude_|\\AnthropicClaude\\|\\Claude-Data\\[^\\]+\\claude-code\\|"
+                             r"\\Packages\\Claude_[^\\]+\\LocalCache\\|\\Roaming\\Claude\\claude-code\\", re.IGNORECASE)
+CREDMAN = ("Claude Code keeps its login in the Windows Credential Manager now (its flag tengu_windows_credman is on), "
+           "and claude-switch switches .credentials.json only.")
 
 LOCKS = []
 SIGNIN = None
@@ -109,7 +115,9 @@ Usage:
 A switch changes the account only, wherever you call it. New sessions start on it and running
 sessions move to it at their next request. claude.ai in Chrome follows it too, once the companion
 extension in ~/.local/share/claude-switch/chrome-extension is loaded in Chrome. Claude Desktop
-follows it as well: an open Desktop is restarted when you answer yes in a terminal.
+follows it as well: an open Desktop is restarted when you answer yes in a terminal. A Remote Control
+server (claude remote-control) is stopped when you answer yes, so what keeps it running starts it
+again on the new account.
 
 A sign-in lasts about 28 days, and only a new sign-in moves its end. From 7 days before, list, the
 prompt and a switch say when it ends, with the claude-switch login that renews it.
@@ -418,8 +426,8 @@ def unlock_store():
 def take_lock(path):
     """The locks claude takes itself, with mkdir. A holder touches its lock every 5 seconds, so one older than 15 is
     dead: claude auth status leaves them behind. Without these locks a session in the middle of a write brings the
-    previous account back."""
-    # TODO(windows): check that claude takes the same lock folders there while a session writes its files.
+    previous account back. The Windows claude takes the same ones (.oauth_refresh.lock through proper-lockfile's
+    <file>.lock folders, read in the 2.1.302 binary on 09/11/2026)."""
     tries = 0
     while True:
         try:
@@ -584,6 +592,51 @@ def desktop_switch(file, label):
         warn("Start Claude Desktop again by hand.")
 
 
+def remote_control_servers():
+    """Windows: the pids of the Remote Control servers here, claude remote-control run outside Claude Desktop."""
+    if not WINDOWS:
+        return []
+    command = ("[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; "
+               "ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process -Filter \"Name = 'claude.exe'\" | "
+               "Select-Object ProcessId, ExecutablePath, CommandLine)")
+    try:
+        output = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+                                capture_output=True, timeout=60, creationflags=NO_WINDOW).stdout
+        processes = json.loads(output.decode("utf-8") or "[]")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return []
+    return [process["ProcessId"] for process in (processes if isinstance(processes, list) else [processes])
+            if isinstance(process, dict) and REMOTE_CONTROL.search(process.get("CommandLine") or "")
+            and not DESKTOP_PROGRAM.search(process.get("ExecutablePath") or "")]
+
+
+def remote_control_switch(label):
+    """Windows: a Remote Control server registered itself with the account it started on, so after a switch it serves
+    that account still. In a terminal it stops when you say so, and whatever keeps it running starts it on LABEL."""
+    servers = remote_control_servers()
+    if not servers:
+        return
+    answer = ""
+    if terminal():
+        answer = ask("Remote Control serves this PC on the account it started on. Stop its server, so it starts again "
+                     f"on {label}? Sessions started from the phone stop. [y/N] ", 60)
+    if answer not in ("y", "Y", "yes", "Yes"):
+        print("Remote Control stays on the account it started on, until its server starts again.")
+        return
+    for pid in servers:
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=30,
+                           creationflags=NO_WINDOW)
+    print(f"Remote Control: its server stopped. A keep-alive starts it again on {label}, else run claude remote-control.")
+
+
+def credential_manager():
+    """Windows: True when Claude Code keeps its login in the Windows Credential Manager instead of .credentials.json,
+    which its flag tengu_windows_credman turns on (read in the 2.1.302 binary, off on the PC on 09/11/2026). The files
+    a switch moves would then not be the login."""
+    return WINDOWS and dig(load_or_none(CONFIG), "cachedGrowthBookFeatures", "tengu_windows_credman") is True
+
+
 def warn_environment():
     for var in ("CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
         if os.environ.get(var):
@@ -614,6 +667,7 @@ def switch_to(file):
     print(f"Switched to {account.label}.")
     web_switch(file)
     desktop_switch(file, account.label)
+    remote_control_switch(account.label)
 
 
 def cmd_login(arguments):
@@ -635,8 +689,8 @@ def cmd_login(arguments):
     if subprocess.run([claude(), "auth", "login", *arguments], env=dict(claude_env(), CLAUDE_CONFIG_DIR=str(SIGNIN))
                       ).returncode != 0:
         die("The sign-in failed, nothing changed.")
-    # TODO(windows): a Claude Code that keeps its login in the Windows Credential Manager writes no .credentials.json
-    # here, and this is where it shows.
+    # A Claude Code that keeps its login in the Windows Credential Manager writes no .credentials.json here. main()
+    # stops before that when its flag is on, and this says it if the login moves there some other way.
     file = account_file(SIGNIN / ".claude.json") if signed_in(load_or_none(SIGNIN / ".credentials.json")) else None
     if file is None:
         die("The sign-in returned, but it left no Claude login. Nothing changed.")
@@ -707,7 +761,7 @@ def stub_moved(stub):
 def show_notification(title, body):
     """True once the desktop showed it: notify-send here, a toast through Windows PowerShell on Windows."""
     if WINDOWS:
-        # TODO(windows): check that the toast shows from the task, with no console window.
+        # The toast shows on the PC. TODO(windows): see one the task shows itself, with no console window.
         if not NOTIFY.is_file():
             return False
         command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
@@ -1027,6 +1081,12 @@ def main(arguments):
     if not shutil.which("claude"):
         die("claude is not in the PATH.")
     lock_store()
+    if credential_manager():
+        if first != "list":
+            die(f"{CREDMAN} Nothing changed.")
+        warn(CREDMAN)
+        cmd_list()
+        return 0
     recover_refreshes()
     repair_live()
     save_live()

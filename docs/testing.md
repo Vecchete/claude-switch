@@ -34,6 +34,20 @@ tests/mutants.py desktop     # the mutants of one file: switch, host, install, d
 Run them one at a time. The Chrome host suite depends on timing, and a run under load that fails for
 that reason counts a mutant as killed when it is not.
 
+## Windows
+
+`windows/tests/run.sh` runs the suites above against the Windows port, on Linux. On the PC,
+`windows\tests\run.ps1` runs the suites of what only Windows does: the smoke tests, Desktop's folder, an
+open Desktop, the quit and the preferences, the named pipe of the Chrome host, and the PowerShell files.
+They use a scratch profile, stand-in processes and a pipe of their own, and never touch the real Desktop.
+`windows\tests\mutants.py` breaks the Windows guards one at a time. [windows/README.md](../windows/README.md)
+has the numbers.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\tests\run.ps1
+py -3 -I windows\tests\mutants.py
+```
+
 ## Checked live
 
 A suite can't show what Claude Code, claude.ai and Desktop do, so these were checked on the real

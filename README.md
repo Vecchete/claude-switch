@@ -6,8 +6,8 @@ in Chrome and Claude Desktop all move to the account you pick, and nothing else 
 every account.
 
 Linux, tested on Ubuntu 24.04 with Claude Code 2.1.314, Chrome Beta 155 and Claude Desktop
-4.4212.0 (the official Linux beta). A Windows 11 port is in [windows/](windows/README.md): it passes
-the suites of the Linux version, and has not run on Windows yet.
+4.4212.0 (the official Linux beta). The Windows 11 port is in [windows/](windows/README.md): it runs on
+the Windows PC since 09/11/2026, with Claude Code 2.1.302, Chrome 156 and Claude Desktop 4.23118.0.
 
 ## Install
 

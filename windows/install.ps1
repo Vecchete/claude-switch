@@ -17,7 +17,9 @@ every login stay in ~\.claude-accounts, never in this checkout.
 It needs Python 3 with its py launcher (winget install Python.Python.3.12) and Claude Code. It works in Windows
 PowerShell 5.1 and in PowerShell 7, and needs no administrator.
 
-TODO(windows): run it, then run it again: the second run must find nothing to install, and -Check nothing that differs.
+Ran on the PC on 09/11/2026 from a terminal outside Claude Desktop: the second run found nothing to install, and -Check
+nothing that differs. From a Claude Desktop session the registry key would land in the app's container, out of Chrome's
+reach.
 #>
 param([switch]$Check)
 
@@ -101,7 +103,7 @@ foreach ($file in 'manifest.json', 'worker.js') {
 }
 
 # The native messaging host of the extension. Chrome and Chrome Beta look for it under the same key on Windows.
-# TODO(windows): Edge looks under HKCU\Software\Microsoft\Edge\NativeMessagingHosts, add it if the PC uses Edge.
+# Edge looks under HKCU\Software\Microsoft\Edge\NativeMessagingHosts. The PC uses Chrome for claude.ai, so it is not set.
 $HostPath = (Join-Path $Share 'chrome-host.cmd').Replace('\', '\\')
 $ExtensionId = Get-ExtensionId
 $HostManifest = @"
@@ -141,7 +143,7 @@ if ($registered -ne $HostManifestPath) {
 # The refresh of the accounts that are not active, as the timer of the Linux version: 2 and 15 minutes after logon
 # and every 4 hours, and a run missed while the PC was off comes as soon as it can. pyw.exe runs it without a
 # console window, so claude-switch writes to ~\.claude-accounts\.task.log.
-# TODO(windows): check in Task Scheduler that the 4 hours repeat with no end, and that a run leaves .task.log.
+# On the PC (09/11/2026) the 4 hours repeat with no end, and a run started from Task Scheduler left .task.log.
 $Pyw = Get-Command 'pyw.exe' -ErrorAction SilentlyContinue
 $Runner = if ($Pyw) { $Pyw.Source } else { $Python.Source }
 $Arguments = "-3 -I `"$Share\claude-switch.py`" refresh"

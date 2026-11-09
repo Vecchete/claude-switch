@@ -17,7 +17,7 @@ function Check([string]$Name, [bool]$Condition) {
     }
 }
 
-foreach ($file in 'install.ps1', 'completion.ps1', 'notify.ps1') {
+foreach ($file in 'install.ps1', 'completion.ps1', 'notify.ps1', 'tests/run.ps1') {
     $tokens = $null
     $parseErrors = $null
     [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $Repo "windows/$file"), [ref]$tokens,
@@ -30,7 +30,7 @@ foreach ($file in 'install.ps1', 'completion.ps1', 'notify.ps1') {
 
 # Windows PowerShell 5.1 reads a script without a BOM in the ANSI code page, and cmd.exe reads a batch file in the
 # OEM one: only ASCII reads the same in all of them.
-foreach ($file in 'install.ps1', 'completion.ps1', 'notify.ps1', 'claude-switch.cmd', 'chrome-host.cmd') {
+foreach ($file in 'install.ps1', 'completion.ps1', 'notify.ps1', 'tests/run.ps1', 'claude-switch.cmd', 'chrome-host.cmd') {
     $bytes = [System.IO.File]::ReadAllBytes((Join-Path $Repo "windows/$file"))
     Check "$file is ASCII" (-not ($bytes | Where-Object { $_ -gt 127 }))
 }
@@ -85,7 +85,13 @@ try {
     Check 'a prefix: only what matches' (($lu -contains 'lucas@example.com') -and ($lu -contains 'lucas@example.org') -and
         $lu.Count -eq 2)
     Check 'a prefix: the commands too' ((Complete 'claude-switch li') -contains 'list')
-    Check 'options' (((Complete 'claude-switch -') -join ',') -eq '-h,--help')
+    # Windows PowerShell 5.1 never runs a native completer for a word that is only a dash (seen 2026-11-09, 5.1.26100):
+    # it offers nothing there, PowerShell 7 offers the options.
+    if ($PSVersionTable.PSEdition -eq 'Desktop') {
+        Check 'options: nothing in Windows PowerShell' ((Complete 'claude-switch -').Count -eq 0)
+    } else {
+        Check 'options' (((Complete 'claude-switch -') -join ',') -eq '-h,--help')
+    }
     Check 'login: the accounts' (((Complete 'claude-switch login wo') -join ',') -eq 'work')
     Check 'rename: the accounts' ((Complete 'claude-switch rename ') -contains 'other@example.net')
     Check 'refresh: --force' (((Complete 'claude-switch refresh ') -join ',') -eq '--force')

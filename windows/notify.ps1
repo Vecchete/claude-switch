@@ -7,8 +7,9 @@ claude-switch runs it with powershell.exe, Windows PowerShell 5.1, which has the
 PowerShell 7 doesn't have them. It exits 0 once Windows took the notification, 1 otherwise, and claude-switch
 counts it as shown only on 0.
 
-TODO(windows): check that the toast shows when the claude-switch-refresh task runs it, and whether an app id of
-its own reads better than the one of Windows PowerShell used here.
+The toast shows on the PC (09/11/2026, read back from the notification center under the app id below).
+TODO(windows): see one the claude-switch-refresh task shows itself, and whether an app id of its own reads better
+than the one of Windows PowerShell used here.
 #>
 param(
     [Parameter(Mandatory = $true)][string]$Title,
