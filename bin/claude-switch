@@ -174,10 +174,16 @@ repair_live() {
 }
 
 # NAME, EMAIL, PLAN and ENDS, the date the sign-in ends or "signed out". An empty name must stay a
-# field, so no tab.
+# field, so no tab. PLAN is the plan as claude.ai names it: Max 20x is called Ultra since 30/10/2026,
+# and claude still says max for it, telling it by the rate limit tier default_claude_max_20x. The plan
+# and the tier of the profile, which claude fetches again at each start, come before the login's,
+# which a token refresh leaves as it was.
 read_account() {
     IFS=$'\x1f' read -r NAME EMAIL PLAN ENDS < <(jq -r '[.name, .oauthAccount.emailAddress,
-        (.login.claudeAiOauth.subscriptionType // "-"),
+        (((.oauthAccount.organizationType | strings | select(startswith("claude_")) | ltrimstr("claude_")
+            | select(. != "")) // .login.claudeAiOauth.subscriptionType // "-") as $plan
+            | (.oauthAccount.organizationRateLimitTier // .login.claudeAiOauth.rateLimitTier) as $tier
+            | if $plan == "max" and $tier == "default_claude_max_20x" then "ultra" else $plan end),
         (if .dead then "signed out" else ((.login.claudeAiOauth.refreshTokenExpiresAt // 0) / 1000 | floor
             | if . > 0 then strflocaltime("%d/%m/%Y") else "-" end) end)] | join("\u001f")' "$1")
     LABEL=${NAME:-$EMAIL}

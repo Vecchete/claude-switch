@@ -39,6 +39,17 @@ MUTANTS = [
      '    mv "$CREDENTIALS.switch" "$CREDENTIALS"\n'
      '    jq --slurpfile account "$1" "$DROP_CACHES | .oauthAccount = \\$account[0].oauthAccount" "$CONFIG" > "$CONFIG.switch"\n'),
     ("first-match-wins", "switch", "switch", '    [ "${#found[@]}" -eq 1 ] || return 2\n', ""),
+    # The plan as claude.ai names it.
+    ("ultra-not-named", "switch", "switch",
+     '| if $plan == "max" and $tier == "default_claude_max_20x" then "ultra" else $plan end),',
+     "| $plan),"),
+    ("login-tier-first", "switch", "switch",
+     "(.oauthAccount.organizationRateLimitTier // .login.claudeAiOauth.rateLimitTier) as $tier",
+     "(.login.claudeAiOauth.rateLimitTier // .oauthAccount.organizationRateLimitTier) as $tier"),
+    ("profile-plan-ignored", "switch", "switch",
+     '(.oauthAccount.organizationType | strings | select(startswith("claude_")) | ltrimstr("claude_")\n'
+     '            | select(. != ""))',
+     "empty"),
     ("no-key-canary", "switch", "switch", "    warn_environment\n    check_login_keys\n", "    warn_environment\n"),
     ("login-no-email", "switch", "switch", '        set -- --email "$wanted_email" "$@"\n', ""),
     ("login-no-warning", "switch", "switch",

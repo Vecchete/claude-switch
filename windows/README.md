@@ -190,8 +190,6 @@ Read on the PC on 09/11/2026, nothing changed:
 - A Claude Desktop session runs in the app's MSIX container, where a new file in `%LOCALAPPDATA%` and a write in HKCU
   land in the container's own copy. claude-switch keeps its files under the profile, outside AppData, so it works from
   a session too (Desktop then stays on its account), but `install.ps1` has to run outside.
-- The PLAN column of `list` and of the prompt says `ultra` for Max 20x, and takes the plan and the tier of the
-  account's profile before the ones of its login. The Linux version still says `max` for it.
 - Ctrl+C in `claude-switch.cmd` gets cmd's "Terminate batch job (Y/N)?" once the script stopped.
 - A claude installed with npm is `claude.cmd`, so its arguments go through cmd.exe. The native `claude.exe` doesn't
   have that.

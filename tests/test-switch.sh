@@ -83,6 +83,28 @@ check "back to the first by email" '[ "$(live_cred .claudeAiOauth.accessToken)" 
 "$SCRIPT" second > "$T/out" 2>&1
 check "a rotated token survives the way out and back" '[ "$(live_cred .claudeAiOauth.refreshToken)" = B-rotated ]'
 
+# Max 20x is called Ultra since 30/10/2026, and claude still says max for it. The profile, which claude
+# fetches again at each start, comes before the login, which a refresh leaves as it was. The plan is the
+# word after the email: an account with no name shows it twice.
+plan() { "$SCRIPT" list | awk -v who="$1" '{ for (i = 1; i < NF; i++) if ($i == who) found = $(i + 1) } END { print found }'; }
+edit() { jq "$1" "$2" > "$T/c" && cp "$T/c" "$2"; }
+edit '.claudeAiOauth.rateLimitTier = "default_claude_max_5x"' "$HOME/.claude/.credentials.json"
+edit '.oauthAccount += {organizationType: "claude_max", organizationRateLimitTier: "default_claude_max_20x"}' "$HOME/.claude.json"
+for f in "$HOME"/.claude-accounts/b@example.com_*.json; do
+    edit '.login.claudeAiOauth.rateLimitTier = "default_claude_max_5x"
+        | .oauthAccount += {organizationType: "claude_max", organizationRateLimitTier: "default_claude_max_20x"}' "$f"
+done
+for f in "$HOME"/.claude-accounts/a@example.com_*.json; do
+    edit '.login.claudeAiOauth.rateLimitTier = "default_claude_max_20x"
+        | .oauthAccount += {organizationType: "claude_max", organizationRateLimitTier: "default_claude_max_5x"}' "$f"
+done
+check "plan: the 20x tier of the profile is Ultra, before the 5x of the login" '[ "$(plan b@example.com)" = ultra ]'
+check "plan: the 5x tier of the profile is Max, before the 20x of the login" '[ "$(plan a@example.com)" = max ]'
+for f in "$HOME"/.claude-accounts/a@example.com_*.json; do edit 'del(.oauthAccount.organizationRateLimitTier)' "$f"; done
+check "plan: with no tier in the profile, the one of the login" '[ "$(plan a@example.com)" = ultra ]'
+for f in "$HOME"/.claude-accounts/a@example.com_*.json; do edit '.oauthAccount.organizationType = "claude_pro"' "$f"; done
+check "plan: the profile names the plan before the login" '[ "$(plan a@example.com)" = pro ]'
+
 "$SCRIPT" nobody > "$T/out" 2>&1
 check "unknown name fails" '[ $? -ne 0 ] || grep -q "No account called nobody" "$T/out"'
 check "unknown name: the hint names claude-switch login" 'grep -q "Add it with: claude-switch login$" "$T/out"'
