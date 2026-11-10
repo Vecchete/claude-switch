@@ -132,6 +132,35 @@ try:
     run("second")
     check("a rotated token survives the way out and back", read(credentials)["claudeAiOauth"]["refreshToken"] == "B-rotated")
 
+    # Max 20x is called Ultra since 30/10/2026, and Claude Code still says max for it. The profile, which Claude Code
+    # fetches again at each start, comes before the login, which a refresh leaves as it was.
+    def plan(email):
+        """The PLAN column of EMAIL's row, the word after the email (an account with no name shows it twice)."""
+        words = next(line.split() for line in run("list").stdout.splitlines() if email in line.split())
+        return words[len(words) - words[::-1].index(email)]
+
+    live, conf = read(credentials), read(config)
+    live["claudeAiOauth"]["rateLimitTier"] = "default_claude_max_5x"
+    conf["oauthAccount"].update(organizationType="claude_max", organizationRateLimitTier="default_claude_max_20x")
+    write(credentials, live)
+    write(config, conf)
+    stored = read(account("b@example.com"))
+    stored["login"]["claudeAiOauth"]["rateLimitTier"] = "default_claude_max_5x"
+    stored["oauthAccount"].update(organizationType="claude_max", organizationRateLimitTier="default_claude_max_20x")
+    write(account("b@example.com"), stored)
+    stored = read(account("a@example.com"))
+    stored["login"]["claudeAiOauth"]["rateLimitTier"] = "default_claude_max_20x"
+    stored["oauthAccount"].update(organizationType="claude_max", organizationRateLimitTier="default_claude_max_5x")
+    write(account("a@example.com"), stored)
+    check("plan: the 20x tier of the profile is Ultra, before the 5x of the login", plan("b@example.com") == "ultra")
+    check("plan: the 5x tier of the profile is Max, before the 20x of the login", plan("a@example.com") == "max")
+    del stored["oauthAccount"]["organizationRateLimitTier"]
+    write(account("a@example.com"), stored)
+    check("plan: with no tier in the profile, the one of the login", plan("a@example.com") == "ultra")
+    stored["oauthAccount"]["organizationType"] = "claude_pro"
+    write(account("a@example.com"), stored)
+    check("plan: the profile names the plan before the login", plan("a@example.com") == "pro")
+
     result = run("nobody")
     check("an unknown name is refused", result.returncode == 1 and "No account called nobody" in result.stderr)
 

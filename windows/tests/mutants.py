@@ -192,6 +192,14 @@ MUTANTS = [
      '        return b"\\x00" + text.encode("utf-16-le", errors="surrogatepass")\n',
      '        return b"\\x00" + text.encode("utf-16-le")\n'),
     # The command.
+    ("ultra-not-named", "switch", "switch",
+     '    return "ultra" if plan == "max" and tier == ULTRA_TIER else str(plan)\n', "    return str(plan)\n"),
+    ("login-tier-first", "switch", "switch",
+     '    tier = alt(dig(data, "oauthAccount", "organizationRateLimitTier"), dig(login, "rateLimitTier"))\n',
+     '    tier = alt(dig(login, "rateLimitTier"), dig(data, "oauthAccount", "organizationRateLimitTier"))\n'),
+    ("profile-plan-ignored", "switch", "switch",
+     '    plan = organization[len("claude_"):] if isinstance(organization, str) and organization.startswith("claude_") '
+     'else ""\n', '    plan = ""\n'),
     ("credman-ignored", "switch", "switch",
      '    return WINDOWS and dig(load_or_none(CONFIG), "cachedGrowthBookFeatures", "tengu_windows_credman") is True\n',
      "    return False\n"),

@@ -328,6 +328,21 @@ def local_date(ms):
     return datetime.datetime.fromtimestamp(seconds).strftime("%d/%m/%Y") if seconds > 0 else "-"
 
 
+# Max 20x is called Ultra since 30/10/2026, and Max 5x Max (Claude Help Center, "What is the Ultra plan?"). Claude Code
+# still says max for both, and tells Ultra by this rate limit tier (read in the 2.1.302 binary).
+ULTRA_TIER = "default_claude_max_20x"
+
+
+def plan_of(data, login):
+    """The plan of an account, as claude.ai names it. Claude Code fetches the profile of the account again at its
+    start, while a token refresh leaves the plan of the login as it was, so the profile comes first."""
+    organization = dig(data, "oauthAccount", "organizationType")
+    plan = organization[len("claude_"):] if isinstance(organization, str) and organization.startswith("claude_") else ""
+    plan = plan or alt(dig(login, "subscriptionType"), "-")
+    tier = alt(dig(data, "oauthAccount", "organizationRateLimitTier"), dig(login, "rateLimitTier"))
+    return "ultra" if plan == "max" and tier == ULTRA_TIER else str(plan)
+
+
 def read_account(file):
     """name, email, plan, ends (the date the sign-in ends or "signed out") and label of an account file."""
     data = load(file)
@@ -337,8 +352,8 @@ def read_account(file):
     email = dig(data, "oauthAccount", "emailAddress")
     email = email if isinstance(email, str) else ""
     ends = "signed out" if is_dead(data) else local_date(alt(dig(login, "refreshTokenExpiresAt"), 0))
-    return types.SimpleNamespace(data=data, name=name, email=email, plan=str(alt(dig(login, "subscriptionType"), "-")),
-                                 ends=ends, label=name or email)
+    return types.SimpleNamespace(data=data, name=name, email=email, plan=plan_of(data, login), ends=ends,
+                                 label=name or email)
 
 
 def login_hint(label):

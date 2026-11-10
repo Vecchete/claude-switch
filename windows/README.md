@@ -85,12 +85,12 @@ from the Store, Chrome 156), on 09/11/2026, `windows\tests\run.ps1`:
 
 | Suite | Run against | Checks |
 |---|---|---|
-| `windows/tests/test-switch.py` | `claude-switch.py` | 39 passed |
+| `windows/tests/test-switch.py` | `claude-switch.py` | 43 passed |
 | `windows/tests/test-desktop.py` | `desktop.py` and `localstorage.py` | 86 passed |
 | `windows/tests/test-chrome.py` | `claude-switch.py` and `chrome-host.py` | 14 passed |
 | `windows/tests/test-powershell.ps1` | `install.ps1`, `completion.ps1`, `notify.ps1`, `tests/run.ps1` | 29 passed |
 
-`windows/tests/mutants.py` breaks the Windows guards one at a time, in a copy: 70 of 70 killed.
+`windows/tests/mutants.py` breaks the Windows guards one at a time, in a copy: 73 of 73 killed.
 
 `test-desktop.py` writes and reads Desktop's Local Storage with its own code, after LevelDB's formats, so a mistake of
 `localstorage.py` can't hide behind the same mistake in the test. On a copy of the PC's real Local Storage,
@@ -130,6 +130,11 @@ Read on the PC on 09/11/2026, nothing changed:
   `cloud:environment:env_<id>`).
 - Desktop keeps the Code sessions of an account under `claude-code-sessions\<accountUuid>\<organizationUuid>`, and that
   organization is the one the account's saved login names.
+- Anthropic renamed Max 5x to Max and Max 20x to Ultra on 30/10/2026. Claude Code 2.1.302 still says `max` for both,
+  in the login and in the profile, and tells Ultra by the rate limit tier `default_claude_max_20x` (read in its
+  binary). A login made on 10/11/2026 still said `max`. A token refresh keeps the tier the login was given, while the
+  profile in `oauthAccount` is fetched again at each start of Claude Code, so the two can differ: on the PC one account
+  had `default_claude_max_20x` in its login and `default_claude_max_5x` in its profile.
 
 ## Left to do on the PC
 
@@ -185,6 +190,8 @@ Read on the PC on 09/11/2026, nothing changed:
 - A Claude Desktop session runs in the app's MSIX container, where a new file in `%LOCALAPPDATA%` and a write in HKCU
   land in the container's own copy. claude-switch keeps its files under the profile, outside AppData, so it works from
   a session too (Desktop then stays on its account), but `install.ps1` has to run outside.
+- The PLAN column of `list` and of the prompt says `ultra` for Max 20x, and takes the plan and the tier of the
+  account's profile before the ones of its login. The Linux version still says `max` for it.
 - Ctrl+C in `claude-switch.cmd` gets cmd's "Terminate batch job (Y/N)?" once the script stopped.
 - A claude installed with npm is `claude.cmd`, so its arguments go through cmd.exe. The native `claude.exe` doesn't
   have that.
@@ -212,5 +219,7 @@ Read on the PC on 09/11/2026, nothing changed:
   https://github.com/tddworks/ClaudeBar/pull/656, https://github.com/Lectern-HQ/lectern-cookie-reader/pull/62
 - Register-ArgumentCompleter:
   https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/register-argumentcompleter
+- Max 20x is called Ultra since 30/10/2026, and existing subscribers moved to it:
+  https://support.claude.com/en/articles/17728952-what-is-the-ultra-plan
 - WinRT toasts work in Windows PowerShell 5.1 and not in PowerShell 7:
   https://smsagent.blog/2024/10/29/popping-toast-notifications-in-powershell-core/
