@@ -41,6 +41,9 @@ claude-switch                          the prompt: switch, add (a) or rename (r)
 claude-switch NAME                     switch to NAME, a name or an email
 claude-switch list                     the accounts, * marks the active one
 claude-switch login [ACCOUNT]          sign in an account and keep it, or renew ACCOUNT
+claude-switch key import NAME          keep the gateway key now in ~/.claude/settings.json as NAME
+claude-switch key add NAME [--like ACCOUNT] [--base-url URL] [--env VAR=VALUE]...
+                                       keep another gateway key, its token asked without echo
 claude-switch rename NAME NEW_NAME     rename an account
 claude-switch refresh [--force]        refresh the accounts that are not active (the timer does it)
 claude-switch help                     this list, -h and --help too
@@ -55,6 +58,30 @@ prompt and a switch say when it ends, with the command that renews it:
 ```text
 claude-switch: The sign-in of work ends on 09/11/2026, in 7 days. Sign in again before then: claude-switch login work
 ```
+
+## Gateway keys
+
+A key of an LLM gateway such as LiteLLM is an account too, beside the claude.ai ones. It is the set of
+gateway entries in the `env` of `~/.claude/settings.json`: `ANTHROPIC_AUTH_TOKEN` or
+`ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, the
+`ANTHROPIC_DEFAULT_*_MODEL` names and `ANTHROPIC_CUSTOM_HEADERS`. Claude Code takes such a token before
+the claude.ai login, so:
+
+- a switch to a key replaces those entries with the key's, and the claude.ai login stays where it is;
+- a switch to a claude.ai account takes them out, and the login is used again;
+- the other entries of `env` and the rest of `settings.json` stay, with the file's mode.
+
+```bash
+claude-switch key import work-gw                                   # the key settings.json holds now
+claude-switch key add team-gw --like work-gw                       # another token, same gateway and models
+claude-switch key add other-gw --base-url https://gw.example --env ANTHROPIC_DEFAULT_SONNET_MODEL=sonnet
+claude-switch team-gw
+```
+
+The token is asked without echo, or read from the standard input, never from the command line. A
+switch refuses while `settings.json` holds a token no account keeps, so none is lost. claude.ai in
+Chrome and Claude Desktop stay on their account, and the refresh skips keys. A token exported in the
+shell can keep a claude started from it on that token, so the switch warns about one.
 
 ## What a switch moves
 

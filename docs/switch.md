@@ -38,6 +38,19 @@ Claude Code adds another key to `.credentials.json`, the switch says so, because
 
 A name or an email that matches several accounts is refused, for a switch, a login and a rename.
 
+## Gateway keys
+
+A gateway key account is `~/.claude-accounts/key_<name>.json`, mode 600, holding `kind: "key"`, `name`
+and `env`: the gateway entries listed in the README. The active key is the account whose token is the
+one in the `env` of `~/.claude/settings.json`, compared inside jq and never printed. It goes before the
+claude.ai login in `list`, the prompt and the choice claude makes.
+
+A switch to a key takes every gateway entry out of that `env`, puts in the key's, writes the file aside
+with the mode the old one had and renames it. A switch to a claude.ai account does the claude.ai switch
+above, then takes the gateway entries out, only when a key was active, so a machine without keys never
+has `settings.json` rewritten. A token in `settings.json` that no account keeps stops every switch
+until `claude-switch key import NAME` keeps it.
+
 ## Signing in and renewing
 
 `claude-switch login` signs in beside the store, in a folder of its own, so the live account changes

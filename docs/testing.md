@@ -7,6 +7,7 @@ scratch `HOME`:
 |---|---|
 | `test-switch.sh` | the switch, the prompt, login and rename, with fake logins and the real `claude auth status` |
 | `test-refresh.sh` | the background refresh, with a fake claude |
+| `test-keys.sh` | gateway key accounts: import, add, switches between keys and claude.ai accounts, `settings.json` kept whole |
 | `test-chrome-host.py` | the Chrome host, with a fake extension, a fake claude.ai and a cookie jar |
 | `test-switch-chrome.py` | `claude-switch` driving the Chrome host end to end |
 | `test-worker.mjs` | the extension's worker, with a fake `chrome` API (needs `node`) |
