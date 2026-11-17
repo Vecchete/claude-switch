@@ -44,7 +44,7 @@ account "my laptop" other@example.net
 account '$(touch PWNED)' x@example.com
 LAPTOP='my\ laptop' RUN='\$\(touch\ PWNED\)'
 ACCOUNTS=(lucas@example.com work lucas@example.org "$LAPTOP" other@example.net "$RUN" x@example.com)
-COMMANDS=(list login rename refresh help)
+COMMANDS=(list login key rename refresh help)
 BEFORE=$(cd "$STORE" && ls -A && md5sum ./*.json)
 
 offers "claude-switch " > "$T/got"
@@ -60,6 +60,8 @@ offers "claude-switch rename wo" > "$T/got"
 check "rename: an account" 'expect work | diff - "$T/got"'
 offers "claude-switch refresh " > "$T/got"
 check "refresh: --force" 'expect --force | diff - "$T/got"'
+offers "claude-switch key " > "$T/got"
+check "key: import and add" 'expect add import | diff - "$T/got"'
 offers "claude-switch list " > "$T/got"
 check "list: nothing" '[ ! -s "$T/got" ]'
 offers "claude-switch rename work " > "$T/got"

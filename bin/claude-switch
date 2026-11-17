@@ -23,6 +23,7 @@ umask 077
 
 CREDENTIALS=$HOME/.claude/.credentials.json
 CONFIG=$HOME/.claude.json
+SETTINGS=$HOME/.claude/settings.json
 STORE=$HOME/.claude-accounts
 CHROME_HOST=$HOME/.local/share/claude-switch/chrome-host.py
 DESKTOP_HELPER=$HOME/.local/share/claude-switch/desktop.py
@@ -45,6 +46,14 @@ DROP_CACHES='del(.managedSettingsNoticeSeenOrg, .additionalModelOptionsCache,
     .metricsStatusCache, .metricsStatusCacheByPrincipal, .githubWebConnectionStatusCache,
     .unusedLimitResetStatusCache, .startupPrefetchedAt)'
 
+# A gateway key account is the set of these entries in the env of ~/.claude/settings.json: a token there
+# goes before the claude.ai login, and the model names and the URL belong to the gateway. A switch
+# replaces all of them, the other entries of env stay.
+KEY_ENV='["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_CUSTOM_HEADERS"]'
+KEY_TOKEN='(.ANTHROPIC_AUTH_TOKEN // .ANTHROPIC_API_KEY // "")'
+
 # A stored access token with less than this left is refreshed. The timer runs every 4 hours.
 REFRESH_AHEAD_MS=$((270 * 60 * 1000))
 # A sign-in that ends within this is announced.
@@ -63,7 +72,7 @@ cleanup() {
     [ -z "$STUB" ] || finish_stub "$STUB" || true
     release_locks
     [ -z "$SIGNIN" ] || rm -rf "$SIGNIN"
-    rm -f "$CREDENTIALS.switch" "$CONFIG.switch"
+    rm -f "$CREDENTIALS.switch" "$CONFIG.switch" "$SETTINGS.switch"
     [ -z "$WEB_AWAY" ] || web_back
 }
 trap cleanup EXIT
@@ -81,6 +90,11 @@ Usage:
                                          With ACCOUNT, a name or an email already here, it renews
                                          that one: claude.ai in Chrome goes to it first and the sign-in
                                          page asks for its email. OPTIONS go to claude auth login.
+  claude-switch key import NAME          Keep the gateway key now in ~/.claude/settings.json as the
+                                         account NAME: its token, URL and model names.
+  claude-switch key add NAME [--base-url URL] [--env VAR=VALUE]...
+                                         Keep a gateway key as the account NAME. The token is asked
+                                         without echo, or read from the standard input.
   claude-switch rename NAME NEW_NAME     Rename an account.
   claude-switch refresh [--force]        Refresh the login of the accounts that are not active.
                                          The claude-switch-refresh timer runs it at boot and every
@@ -91,6 +105,9 @@ A switch changes the account only, wherever you call it. New sessions start on i
 sessions move to it at their next request. claude.ai in Chrome follows it too, once the companion
 extension in ~/.local/share/claude-switch/chrome-extension is loaded in Chrome. Claude Desktop
 follows it as well: an open Desktop is restarted when you answer yes in a terminal.
+
+A switch to a gateway key puts its entries in the env of ~/.claude/settings.json, a switch to a
+claude.ai account takes them out again. claude.ai in Chrome and Claude Desktop stay on their account.
 
 A sign-in lasts about 28 days, and only a new sign-in moves its end. From 7 days before, list, the
 prompt and a switch say when it ends, with the claude-switch login that renews it.
@@ -145,6 +162,7 @@ holder_of_live() {
     local live other
     live=$(fingerprint "$CREDENTIALS" "")
     for other in "$STORE"/*.json; do
+        is_key "$other" && continue
         if [ "$other" != "$1" ] && [ "$(fingerprint "$other" .login)" = "$live" ]; then
             printf '%s\n' "$other"
             return 0
@@ -179,13 +197,15 @@ repair_live() {
 # and the tier of the profile, which claude fetches again at each start, come before the login's,
 # which a token refresh leaves as it was.
 read_account() {
-    IFS=$'\x1f' read -r NAME EMAIL PLAN ENDS < <(jq -r '[.name, .oauthAccount.emailAddress,
+    IFS=$'\x1f' read -r NAME EMAIL PLAN ENDS < <(jq -r 'if .kind == "key" then
+        [.name, (.env.ANTHROPIC_BASE_URL // "gateway key"), "key", "-"] | join("\u001f") else
+        [.name, .oauthAccount.emailAddress,
         (((.oauthAccount.organizationType | strings | select(startswith("claude_")) | ltrimstr("claude_")
             | select(. != "")) // .login.claudeAiOauth.subscriptionType // "-") as $plan
             | (.oauthAccount.organizationRateLimitTier // .login.claudeAiOauth.rateLimitTier) as $tier
             | if $plan == "max" and $tier == "default_claude_max_20x" then "ultra" else $plan end),
         (if .dead then "signed out" else ((.login.claudeAiOauth.refreshTokenExpiresAt // 0) / 1000 | floor
-            | if . > 0 then strflocaltime("%d/%m/%Y") else "-" end) end)] | join("\u001f")' "$1")
+            | if . > 0 then strflocaltime("%d/%m/%Y") else "-" end) end)] | join("\u001f") end' "$1")
     LABEL=${NAME:-$EMAIL}
 }
 
@@ -226,7 +246,7 @@ name_problem() {
             printf 'A name must not be empty, start with - or hold control characters.'
             return 0
             ;;
-        list|login|rename|refresh|help)
+        list|login|key|rename|refresh|help)
             printf '%s is a command of this script, choose another name.' "$1"
             return 0
             ;;
@@ -245,6 +265,138 @@ name_problem() {
 set_name() {
     jq --arg name "$2" '.name = $name' "$1" > "$1.tmp"
     mv "$1.tmp" "$1"
+}
+
+# True when FILE is a gateway key account.
+is_key() {
+    jq -e '.kind == "key"' "$1" >/dev/null 2>&1
+}
+
+# The key account whose token is in the env of settings.json. Fails with 1 when no token is there, 2 when
+# the token there is kept by no account. Tokens are compared inside jq, never printed.
+live_key() {
+    local file
+    jq -e ".env // {} | $KEY_TOKEN | length > 0" "$SETTINGS" >/dev/null 2>&1 || return 1
+    for file in "$STORE"/*.json; do
+        if jq -e --slurpfile settings "$SETTINGS" \
+            ".kind == \"key\" and (.env | $KEY_TOKEN) == (\$settings[0].env // {} | $KEY_TOKEN)" "$file" >/dev/null; then
+            printf '%s\n' "$file"
+            return 0
+        fi
+    done
+    return 2
+}
+
+# The account the next session starts on: a gateway key before the claude.ai login, as claude chooses.
+active_file() {
+    live_key || live_file
+}
+
+# A switch replaces the token in settings.json, so one no account keeps stops it.
+require_kept_key() {
+    local status=0
+    live_key >/dev/null || status=$?
+    [ "$status" -ne 2 ] || die "~/.claude/settings.json holds a gateway key no account keeps, nothing changed." \
+        "Keep it first: claude-switch key import NAME"
+}
+
+# Puts the entries of the key account FILE in the env of settings.json in place of those of any gateway
+# key, or only takes those out without FILE. The rest of the file stays. It's written aside and renamed,
+# with the mode it had, since running sessions read it at any moment. The token never goes on a command
+# line.
+set_key_env() {
+    [ -f "$SETTINGS" ] || printf '{}\n' > "$SETTINGS"
+    jq --slurpfile account "${1:-/dev/null}" \
+        "((.env // {} | with_entries(select(.key | IN($KEY_ENV[]) | not))) + (\$account[0].env // {})) as \$env
+        | if \$env == {} then del(.env) else .env = \$env end" "$SETTINGS" > "$SETTINGS.switch"
+    chmod --reference="$SETTINGS" "$SETTINGS.switch"
+    mv "$SETTINGS.switch" "$SETTINGS"
+}
+
+switch_to_key() {
+    local file=$1
+    require_kept_key
+    if [ "$(live_key || true)" = "$file" ]; then
+        printf 'Already on %s.\n' "$LABEL"
+        return 0
+    fi
+    set_key_env "$file"
+    warn_environment
+    printf 'Switched to %s, a gateway key. claude.ai in Chrome and Claude Desktop stay on their account.\n' "$LABEL"
+}
+
+key_usage() {
+    die "Usage: claude-switch key import NAME, or claude-switch key add NAME [--like ACCOUNT] [--base-url URL] [--env VAR=VALUE]..."
+}
+
+# Keeps a gateway key as an account: the one in settings.json (import), or a token asked without echo or
+# read from the standard input (add). ACTION NAME [OPTIONS]
+cmd_key() {
+    local action=${1:-} name file problem held like="" base="" pair var token=""
+    local extra=()
+    [ $# -ge 2 ] || key_usage
+    name=$(trim "$2")
+    shift 2
+    problem=$(name_problem "$name")
+    [ -z "$problem" ] || die "$problem"
+    file=$STORE/key_${name//[^[:alnum:]@._-]/_}.json
+    [ ! -e "$file" ] || die "Another account is kept as ${file##*/}, choose another name."
+    case $action in
+        import)
+            [ $# -eq 0 ] || key_usage
+            jq -e ".env // {} | $KEY_TOKEN | length > 0" "$SETTINGS" >/dev/null 2>&1 \
+                || die "The env of ~/.claude/settings.json holds no gateway key."
+            if held=$(live_key); then
+                read_account "$held"
+                die "The gateway key in ~/.claude/settings.json is already kept as $LABEL."
+            fi
+            jq --arg name "$name" "{kind: \"key\", name: \$name, env: (.env | with_entries(select(.key | IN($KEY_ENV[]))))}" \
+                "$SETTINGS" > "$file.tmp"
+            ;;
+        add)
+            while [ $# -gt 0 ]; do
+                [ $# -ge 2 ] || key_usage
+                case $1 in
+                    --like)
+                        like=$(require_account "$2") || exit 1
+                        is_key "$like" || die "$2 is a claude.ai account, --like takes a gateway key."
+                        ;;
+                    --base-url) base=$2 ;;
+                    --env)
+                        pair=$2 var=${2%%=*}
+                        [ "$pair" != "$var" ] || die "--env takes VAR=VALUE."
+                        case $var in
+                            ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY) die "The token is asked, never given on the command line." ;;
+                        esac
+                        jq -en --arg var "$var" "\$var | IN($KEY_ENV[])" >/dev/null \
+                            || die "$var is not an entry of a gateway key: $(jq -rn "$KEY_ENV | join(\", \")")"
+                        extra+=("$pair")
+                        ;;
+                    *) key_usage ;;
+                esac
+                shift 2
+            done
+            if [ -t 0 ]; then
+                read -rs -p "Gateway key for $name: " token || true
+                printf '\n' >&2
+            else
+                IFS= read -r token || true
+            fi
+            token=$(trim "$token")
+            [ -n "$token" ] || die "No key given, nothing changed."
+            CLAUDE_SWITCH_TOKEN=$token jq -n --arg name "$name" --arg base "$base" --slurpfile like "${like:-/dev/null}" \
+                '{kind: "key", name: $name, env: (($like[0].env // {} | del(.ANTHROPIC_AUTH_TOKEN, .ANTHROPIC_API_KEY))
+                    + (if $base == "" then {} else {ANTHROPIC_BASE_URL: $base} end)
+                    + {ANTHROPIC_AUTH_TOKEN: env.CLAUDE_SWITCH_TOKEN})}' > "$file.tmp"
+            for pair in "${extra[@]}"; do
+                jq --arg var "${pair%%=*}" --arg value "${pair#*=}" '.env[$var] = $value' "$file.tmp" > "$file.tmp2"
+                mv "$file.tmp2" "$file.tmp"
+            done
+            ;;
+        *) key_usage ;;
+    esac
+    mv "$file.tmp" "$file"
+    printf 'Kept the gateway key %s. Switch to it with: claude-switch %q\n' "$name" "$name"
 }
 
 # One switch, sign-in or refresh at a time on the store. A refresh holds it while its folder has the
@@ -382,10 +534,22 @@ warn_environment() {
 }
 
 switch_to() {
-    local file=$1 ends
+    local file=$1 ends key
     read_account "$file"
+    if is_key "$file"; then
+        switch_to_key "$file"
+        return 0
+    fi
+    require_kept_key
+    key=$(live_key || true)
     if [ "$file" = "$(live_file || true)" ]; then
-        printf 'Already on %s.\n' "$LABEL"
+        if [ -n "$key" ]; then
+            set_key_env
+            warn_environment
+            printf 'Switched to %s.\n' "$LABEL"
+        else
+            printf 'Already on %s.\n' "$LABEL"
+        fi
         web_switch "$file"
         desktop_switch "$file"
         return 0
@@ -402,6 +566,7 @@ switch_to() {
     apply_account "$file"
     release_locks
     [ "$(live_file || true)" = "$file" ] || die "A running session wrote over the switch. Run it again."
+    [ -z "$key" ] || set_key_env
     warn_environment
     check_login_keys
     printf 'Switched to %s.\n' "$LABEL"
@@ -627,6 +792,13 @@ signin_reminder() {
     fi
 }
 
+remind_unkept_key() {
+    local status=0
+    live_key >/dev/null || status=$?
+    [ "$status" -ne 2 ] || warn "~/.claude/settings.json holds a gateway key no account keeps, it goes before" \
+        "the claude.ai login. Keep it with: claude-switch key import NAME"
+}
+
 # Only a new sign-in moves the date a sign-in ends, so that date is reminded of ahead of time.
 remind_signins() {
     local file text
@@ -699,6 +871,8 @@ cmd_refresh() {
     tidy_signins
     unlock_store
     for file in "$STORE"/*.json; do
+        # A gateway key has no login to refresh.
+        is_key "$file" && continue
         lock_store
         live=$(live_file || true)
         # The live login belongs to the running sessions, its stored copy is older than theirs.
@@ -713,7 +887,7 @@ cmd_refresh() {
 
 cmd_list() {
     local file live marker
-    live=$(live_file || true)
+    live=$(active_file || true)
     printf '  %-28s %-36s %-6s %s\n' ACCOUNT EMAIL PLAN UNTIL
     for file in "$STORE"/*.json; do
         read_account "$file"
@@ -721,6 +895,7 @@ cmd_list() {
         [ "$file" != "$live" ] || marker="*"
         printf '%s %-28s %-36s %-6s %s\n' "$marker" "$LABEL" "$EMAIL" "$PLAN" "$ENDS"
     done
+    remind_unkept_key
     remind_signins
 }
 
@@ -750,7 +925,7 @@ cmd_prompt() {
         lock_store
         save_live
         unlock_store
-        live=$(live_file || true)
+        live=$(active_file || true)
         files=("$STORE"/*.json)
         row=0
         printf '\nClaude Code accounts\n\n'
@@ -761,10 +936,12 @@ cmd_prompt() {
             [ "$LABEL" = "$EMAIL" ] || shown="$LABEL  $EMAIL"
             when="until $ENDS"
             [ "$ENDS" != "signed out" ] || when=$ENDS
+            [ "$PLAN" != key ] || when=""
             here=""
             [ "$file" != "$live" ] || here="active"
             printf '  %2d) %-56s %-6s %-17s %s\n' "$row" "$shown" "$PLAN" "$when" "$here"
         done
+        remind_unkept_key
         remind_signins
         printf '\n   a) Add an account\n   r) Rename an account\n   q) Quit\n\n'
         if ! read -r -p 'Select an account to switch to: ' choice; then
@@ -826,6 +1003,10 @@ case ${1:-} in
         shift
         unlock_store
         cmd_refresh "$@"
+        ;;
+    key)
+        shift
+        cmd_key "$@"
         ;;
     rename)
         [ $# -eq 3 ] || die "Usage: claude-switch rename NAME NEW_NAME"

@@ -68,10 +68,11 @@ _claude_switch() {
         case ${#WORDS[@]}:${WORDS[1]-} in
             2:-*) printf '%s\n' -h --help ;;
             2:*)
-                printf '%s\n' list login rename refresh help
+                printf '%s\n' list login key rename refresh help
                 _claude_switch_accounts
                 ;;
             3:login | 3:rename) _claude_switch_accounts ;;
+            3:key) printf '%s\n' import add ;;
             3:refresh) printf '%s\n' --force ;;
         esac
     )
