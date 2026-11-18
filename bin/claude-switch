@@ -3,8 +3,8 @@
 #
 # Only the account changes: the login in ~/.claude/.credentials.json and the account in
 # ~/.claude.json. There is one ~/.claude, so the configuration, rules, MCP servers and their logins,
-# sessions and memory stay as they are. Never use CLAUDE_CONFIG_DIR for this: it splits all of that,
-# the rules load twice and dev-ai only syncs ~/.claude.
+# sessions and memory stay as they are. Never use CLAUDE_CONFIG_DIR for this: it splits all of that, and
+# the rules load twice.
 #
 # Each account is one file in ~/.claude-accounts. It holds the login, so only you can read it.
 #
@@ -52,7 +52,14 @@ DROP_CACHES='del(.managedSettingsNoticeSeenOrg, .additionalModelOptionsCache,
 KEY_ENV='["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
     "ANTHROPIC_SMALL_FAST_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_CUSTOM_HEADERS"]'
+# The gateway entries of an env that hold a value. claude takes an empty one as unset, and a switch leaves
+# "" in place of an entry it takes out: a running session takes in an entry that changes, but keeps one
+# that is gone.
+KEY_SET="with_entries(select((.key | IN($KEY_ENV[])) and .value != \"\"))"
+# After KEY_SET: the token, which claude takes before the claude.ai login, and what a gateway knows its key
+# by, the token or else the headers of a gateway that takes the key there.
 KEY_TOKEN='(.ANTHROPIC_AUTH_TOKEN // .ANTHROPIC_API_KEY // "")'
+KEY_CREDENTIAL='(.ANTHROPIC_AUTH_TOKEN // .ANTHROPIC_API_KEY // .ANTHROPIC_CUSTOM_HEADERS // "")'
 
 # A stored access token with less than this left is refreshed. The timer runs every 4 hours.
 REFRESH_AHEAD_MS=$((270 * 60 * 1000))
@@ -62,6 +69,8 @@ WARN_AHEAD_MS=$((3 * 24 * 3600 * 1000))
 REMIND_AHEAD_MS=$((7 * 24 * 3600 * 1000))
 
 LOCKS=()
+# The files this run is writing aside, which only it may remove.
+WRITING=()
 SIGNIN=""
 STUB=""
 DEAD=0
@@ -72,7 +81,8 @@ cleanup() {
     [ -z "$STUB" ] || finish_stub "$STUB" || true
     release_locks
     [ -z "$SIGNIN" ] || rm -rf "$SIGNIN"
-    rm -f "$CREDENTIALS.switch" "$CONFIG.switch" "$SETTINGS.switch"
+    # Another run may be writing its own under the same names, so only what this one was writing.
+    [ "${#WRITING[@]}" -eq 0 ] || rm -f "${WRITING[@]}"
     [ -z "$WEB_AWAY" ] || web_back
 }
 trap cleanup EXIT
@@ -92,9 +102,14 @@ Usage:
                                          page asks for its email. OPTIONS go to claude auth login.
   claude-switch key import NAME          Keep the gateway key now in ~/.claude/settings.json as the
                                          account NAME: its token, URL and model names.
-  claude-switch key add NAME [--base-url URL] [--env VAR=VALUE]...
+  claude-switch key add NAME [--like KEY] [--api-key] [--base-url URL] [--env VAR=VALUE]...
                                          Keep a gateway key as the account NAME. The token is asked
-                                         without echo, or read from the standard input.
+                                         without echo, or read from the standard input. --like takes
+                                         the URL and model names of KEY, --api-key sends the token as
+                                         an Anthropic API key, x-api-key, rather than a bearer token.
+  claude-switch key renew NAME           Give the gateway key NAME a new token, asked the same way.
+  claude-switch key remove NAME          Forget the gateway key NAME, and take it out of
+                                         ~/.claude/settings.json when it is active.
   claude-switch rename NAME NEW_NAME     Rename an account.
   claude-switch refresh [--force]        Refresh the login of the accounts that are not active.
                                          The claude-switch-refresh timer runs it at boot and every
@@ -107,13 +122,15 @@ extension in ~/.local/share/claude-switch/chrome-extension is loaded in Chrome. 
 follows it as well: an open Desktop is restarted when you answer yes in a terminal.
 
 A switch to a gateway key puts its entries in the env of ~/.claude/settings.json, a switch to a
-claude.ai account takes them out again. claude.ai in Chrome and Claude Desktop stay on their account.
+claude.ai account empties them again, which running sessions follow too. claude.ai in Chrome and
+Claude Desktop stay on their account.
 
 A sign-in lasts about 28 days, and only a new sign-in moves its end. From 7 days before, list, the
 prompt and a switch say when it ends, with the claude-switch login that renews it.
 
 Don't use /logout on an account you want to keep: it revokes the login saved here too.
-To forget an account, remove its file in ~/.claude-accounts.
+To forget an account, remove its file in ~/.claude-accounts, or a gateway key with claude-switch key
+remove NAME.
 EOF
 }
 
@@ -272,24 +289,64 @@ is_key() {
     jq -e '.kind == "key"' "$1" >/dev/null 2>&1
 }
 
-# The key account whose token is in the env of settings.json. Fails with 1 when no token is there, 2 when
-# the token there is kept by no account. Tokens are compared inside jq, never printed.
+# True when the env of settings.json holds a gateway token, or the gateway key EXPR names (KEY_TOKEN by
+# default). settings.json may be missing or empty. [EXPR]
+key_in_settings() {
+    jq -e -s "(.[0] // {}) | .env // {} | $KEY_SET | ${1:-$KEY_TOKEN} | length > 0" "$SETTINGS" >/dev/null 2>&1
+}
+
+# The key account whose gateway entries are those in the env of settings.json. A key is known by its
+# credential, then by its URL, then by the rest, so entries changed by hand still name it, see
+# save_live_key. Fails with 1 when no key is there, 2 when the token there is kept by no account, or by
+# several that can't be told apart. Headers without a token fail with 1: claude takes no key from them
+# before the login, and a proxy in front of claude.ai may want headers too. Tokens are compared inside
+# jq, never printed.
 live_key() {
-    local file
-    jq -e ".env // {} | $KEY_TOKEN | length > 0" "$SETTINGS" >/dev/null 2>&1 || return 1
+    local file score best=0 found=()
+    key_in_settings "$KEY_CREDENTIAL" || return 1
     for file in "$STORE"/*.json; do
-        if jq -e --slurpfile settings "$SETTINGS" \
-            ".kind == \"key\" and (.env | $KEY_TOKEN) == (\$settings[0].env // {} | $KEY_TOKEN)" "$file" >/dev/null; then
-            printf '%s\n' "$file"
-            return 0
+        score=$(jq -r --slurpfile settings "$SETTINGS" "if .kind != \"key\" then 0 else
+            (.env // {} | $KEY_SET) as \$key | (\$settings[0].env // {} | $KEY_SET) as \$live
+            | if (\$key | $KEY_CREDENTIAL) != (\$live | $KEY_CREDENTIAL) then 0 elif \$key == \$live then 3
+            elif \$key.ANTHROPIC_BASE_URL == \$live.ANTHROPIC_BASE_URL then 2 else 1 end end" "$file" 2>/dev/null) \
+            || continue
+        score=${score:-0}
+        if [ "$score" -gt "$best" ]; then
+            best=$score found=("$file")
+        elif [ "$score" -eq "$best" ] && [ "$score" -gt 0 ]; then
+            found+=("$file")
         fi
     done
+    if [ "${#found[@]}" -eq 1 ]; then
+        printf '%s\n' "${found[0]}"
+        return 0
+    fi
+    key_in_settings || return 1
     return 2
 }
 
-# The account the next session starts on: a gateway key before the claude.ai login, as claude chooses.
+# Gateway entries changed by hand in settings.json belong to the active key, as a rotated login belongs to
+# its account, so they're saved to it before anything replaces them.
+save_live_key() {
+    local file
+    file=$(live_key) || return 0
+    if ! jq -e --slurpfile settings "$SETTINGS" "(.env | $KEY_SET) == (\$settings[0].env | $KEY_SET)" \
+        "$file" >/dev/null; then
+        jq --slurpfile settings "$SETTINGS" ".env = (\$settings[0].env | $KEY_SET)" "$file" > "$file.tmp"
+        mv "$file.tmp" "$file"
+    fi
+}
+
+# The account the next session starts on: a gateway key before the claude.ai login, as claude chooses,
+# and none when that key is kept by no account.
 active_file() {
-    live_key || live_file
+    local file status=0
+    file=$(live_key) || status=$?
+    case $status in
+        0) printf '%s\n' "$file" ;;
+        1) live_file ;;
+        *) return 1 ;;
+    esac
 }
 
 # A switch replaces the token in settings.json, so one no account keeps stops it.
@@ -297,20 +354,55 @@ require_kept_key() {
     local status=0
     live_key >/dev/null || status=$?
     [ "$status" -ne 2 ] || die "~/.claude/settings.json holds a gateway key no account keeps, nothing changed." \
-        "Keep it first: claude-switch key import NAME"
+        "Keep it with: claude-switch key import NAME. To forget it, remove it after that with:" \
+        "claude-switch key remove NAME"
 }
 
-# Puts the entries of the key account FILE in the env of settings.json in place of those of any gateway
-# key, or only takes those out without FILE. The rest of the file stays. It's written aside and renamed,
-# with the mode it had, since running sessions read it at any moment. The token never goes on a command
-# line.
+# settings.json itself, behind the symbolic link a dotfiles manager may keep in its place.
+settings_target() {
+    readlink -f "$SETTINGS" 2>/dev/null || printf '%s\n' "$SETTINGS"
+}
+
+# Stops a switch before anything changes when settings.json can't be written aside, in a read-only store a
+# dotfiles manager links it to for instance.
+require_writable_settings() {
+    local target
+    target=$(settings_target)
+    [ -w "${target%/*}" ] \
+        || die "~/.claude/settings.json is $target, in a folder this user can't write, nothing changed."
+}
+
+# Puts the entries of the key account FILE in the env of settings.json in place of the gateway entries
+# there, or only empties those without FILE: an entry taken out stays as "", which claude takes as unset,
+# so running sessions leave it too. The rest of the file stays, and a missing or empty one is taken as {}.
+# It's written aside and renamed, since running sessions read it at any moment, with the mode, owner and
+# group it had. The token never goes on a command line. A session keeps the ANTHROPIC_MODEL it started on,
+# which is said. [FILE]
 set_key_env() {
-    [ -f "$SETTINGS" ] || printf '{}\n' > "$SETTINGS"
-    jq --slurpfile account "${1:-/dev/null}" \
-        "((.env // {} | with_entries(select(.key | IN($KEY_ENV[]) | not))) + (\$account[0].env // {})) as \$env
-        | if \$env == {} then del(.env) else .env = \$env end" "$SETTINGS" > "$SETTINGS.switch"
-    chmod --reference="$SETTINGS" "$SETTINGS.switch"
-    mv "$SETTINGS.switch" "$SETTINGS"
+    local target source=/dev/null model new_model
+    require_writable_settings
+    target=$(settings_target)
+    [ ! -s "$target" ] || source=$target
+    model=$(jq -r -s "(.[0] // {}) | .env // {} | $KEY_SET | .ANTHROPIC_MODEL // empty" "$source" 2>/dev/null || true)
+    WRITING=("$target.switch")
+    jq -n --slurpfile settings "$source" --slurpfile account "${1:-/dev/null}" \
+        "(\$settings[0] // {}) | ((.env // {} | with_entries(if .key | IN($KEY_ENV[]) then .value = \"\" else . end))
+        + (\$account[0].env // {})) as \$env | if \$env == {} then del(.env) else .env = \$env end" \
+        > "$target.switch" || die "~/.claude/settings.json can't be read as JSON, nothing changed."
+    if [ ! -e "$target" ]; then
+        mv "$target.switch" "$target"
+    elif chmod --reference="$target" "$target.switch" && chown --reference="$target" "$target.switch" 2>/dev/null; then
+        mv "$target.switch" "$target"
+    else
+        # An owner or a group this user can't give a file of its own: written in place, which keeps them.
+        cat "$target.switch" > "$target"
+        rm -f "$target.switch"
+    fi
+    WRITING=()
+    new_model=$(jq -r ".env // {} | $KEY_SET | .ANTHROPIC_MODEL // empty" "${1:-/dev/null}")
+    if [ -n "$model" ] && [ "$model" != "$new_model" ]; then
+        warn "A running session that started on the model $model keeps it: /model in it picks another."
+    fi
 }
 
 switch_to_key() {
@@ -321,21 +413,62 @@ switch_to_key() {
         return 0
     fi
     set_key_env "$file"
-    warn_environment
+    warn_environment "$file"
+    remind_overrides "$file"
     printf 'Switched to %s, a gateway key. claude.ai in Chrome and Claude Desktop stay on their account.\n' "$LABEL"
 }
 
 key_usage() {
-    die "Usage: claude-switch key import NAME, or claude-switch key add NAME [--like ACCOUNT] [--base-url URL] [--env VAR=VALUE]..."
+    die "Usage: claude-switch key import NAME, key add NAME [--like KEY] [--api-key] [--base-url URL]" \
+        "[--env VAR=VALUE]..., key renew NAME or key remove NAME"
 }
 
-# Keeps a gateway key as an account: the one in settings.json (import), or a token asked without echo or
-# read from the standard input (add). ACTION NAME [OPTIONS]
-cmd_key() {
-    local action=${1:-} name file problem held like="" base="" pair var token=""
+# Sets TOKEN to a token asked without echo, or read from the standard input. The store is unlocked while
+# someone types it. FOR
+read_token() {
+    TOKEN=""
+    unlock_store
+    if [ -t 0 ]; then
+        read -rs -p "Gateway key for $1: " TOKEN || true
+        printf '\n' >&2
+    else
+        IFS= read -r TOKEN || true
+    fi
+    lock_store
+    TOKEN=$(trim "$TOKEN")
+    [ -n "$TOKEN" ] || die "No key given, nothing changed."
+}
+
+# The key account with the same gateway entries as CANDIDATE, other than REPLACED: no switch could tell
+# them apart. CANDIDATE [REPLACED]
+key_twin() {
+    local other
+    for other in "$STORE"/*.json; do
+        if [ "$other" != "${2:-}" ] && jq -e --slurpfile key "$1" \
+            ".kind == \"key\" and (.env | $KEY_SET) == (\$key[0].env | $KEY_SET)" "$other" >/dev/null 2>&1; then
+            printf '%s\n' "$other"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Puts FILE.tmp in place of the key account FILE, unless another account is the same key. FILE
+store_key() {
+    local twin
+    if twin=$(key_twin "$1.tmp" "$1"); then
+        rm -f "$1.tmp"
+        read_account "$twin"
+        die "The same gateway key is already kept as $LABEL, nothing changed."
+    fi
+    mv "$1.tmp" "$1"
+}
+
+# Keeps a gateway key as the account NAME: the one in settings.json (import), or a token asked without echo
+# or read from the standard input (add). ACTION NAME [OPTIONS]
+key_new() {
+    local action=$1 name=$2 file problem held like="" like_name="" base="" api="" pair var
     local extra=()
-    [ $# -ge 2 ] || key_usage
-    name=$(trim "$2")
     shift 2
     problem=$(name_problem "$name")
     [ -z "$problem" ] || die "$problem"
@@ -344,27 +477,32 @@ cmd_key() {
     case $action in
         import)
             [ $# -eq 0 ] || key_usage
-            jq -e ".env // {} | $KEY_TOKEN | length > 0" "$SETTINGS" >/dev/null 2>&1 \
-                || die "The env of ~/.claude/settings.json holds no gateway key."
+            key_in_settings "$KEY_CREDENTIAL" || die "The env of ~/.claude/settings.json holds no gateway key."
             if held=$(live_key); then
                 read_account "$held"
                 die "The gateway key in ~/.claude/settings.json is already kept as $LABEL."
             fi
-            jq --arg name "$name" "{kind: \"key\", name: \$name, env: (.env | with_entries(select(.key | IN($KEY_ENV[]))))}" \
+            jq -s --arg name "$name" "{kind: \"key\", name: \$name, env: ((.[0] // {}) | .env // {} | $KEY_SET)}" \
                 "$SETTINGS" > "$file.tmp"
             ;;
         add)
             while [ $# -gt 0 ]; do
+                if [ "$1" = --api-key ]; then
+                    api=yes
+                    shift
+                    continue
+                fi
                 [ $# -ge 2 ] || key_usage
                 case $1 in
                     --like)
                         like=$(require_account "$2") || exit 1
+                        like_name=$2
                         is_key "$like" || die "$2 is a claude.ai account, --like takes a gateway key."
                         ;;
                     --base-url) base=$2 ;;
                     --env)
                         pair=$2 var=${2%%=*}
-                        [ "$pair" != "$var" ] || die "--env takes VAR=VALUE."
+                        [ "$pair" != "$var" ] && [ -n "${pair#*=}" ] || die "--env takes VAR=VALUE."
                         case $var in
                             ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY) die "The token is asked, never given on the command line." ;;
                         esac
@@ -376,18 +514,21 @@ cmd_key() {
                 esac
                 shift 2
             done
-            if [ -t 0 ]; then
-                read -rs -p "Gateway key for $name: " token || true
-                printf '\n' >&2
-            else
-                IFS= read -r token || true
-            fi
-            token=$(trim "$token")
-            [ -n "$token" ] || die "No key given, nothing changed."
-            CLAUDE_SWITCH_TOKEN=$token jq -n --arg name "$name" --arg base "$base" --slurpfile like "${like:-/dev/null}" \
-                '{kind: "key", name: $name, env: (($like[0].env // {} | del(.ANTHROPIC_AUTH_TOKEN, .ANTHROPIC_API_KEY))
-                    + (if $base == "" then {} else {ANTHROPIC_BASE_URL: $base} end)
-                    + {ANTHROPIC_AUTH_TOKEN: env.CLAUDE_SWITCH_TOKEN})}' > "$file.tmp"
+            read_token "$name"
+            # The store was unlocked while the token was typed.
+            problem=$(name_problem "$name")
+            [ -z "$problem" ] || die "$problem"
+            [ ! -e "$file" ] || die "Another account is kept as ${file##*/}, choose another name."
+            [ -z "$like" ] || [ -f "$like" ] || die "$like_name is gone, nothing changed."
+            # The token goes in the variable of the key it is like: a gateway that wants x-api-key refuses a
+            # bearer token.
+            CLAUDE_SWITCH_TOKEN=$TOKEN jq -n --arg name "$name" --arg base "$base" --arg api "$api" \
+                --slurpfile like "${like:-/dev/null}" "(\$like[0].env // {} | $KEY_SET) as \$like_env
+                | (if \$api != \"\" or (\$like_env.ANTHROPIC_API_KEY != null and \$like_env.ANTHROPIC_AUTH_TOKEN == null)
+                    then \"ANTHROPIC_API_KEY\" else \"ANTHROPIC_AUTH_TOKEN\" end) as \$var
+                | {kind: \"key\", name: \$name, env: ((\$like_env | del(.ANTHROPIC_AUTH_TOKEN, .ANTHROPIC_API_KEY))
+                    + (if \$base == \"\" then {} else {ANTHROPIC_BASE_URL: \$base} end)
+                    + {(\$var): env.CLAUDE_SWITCH_TOKEN})}" > "$file.tmp"
             for pair in "${extra[@]}"; do
                 jq --arg var "${pair%%=*}" --arg value "${pair#*=}" '.env[$var] = $value' "$file.tmp" > "$file.tmp2"
                 mv "$file.tmp2" "$file.tmp"
@@ -395,8 +536,70 @@ cmd_key() {
             ;;
         *) key_usage ;;
     esac
-    mv "$file.tmp" "$file"
+    store_key "$file"
     printf 'Kept the gateway key %s. Switch to it with: claude-switch %q\n' "$name" "$name"
+}
+
+# A new token for the gateway key NAME, in the variable its token is in. Its URL and model names stay, and
+# settings.json takes the new token too when NAME is the active key.
+key_renew() {
+    local file active=""
+    file=$(require_account "$1") || exit 1
+    is_key "$file" || die "$1 is a claude.ai account, renew it with: claude-switch login $(printf %q "$1")"
+    read_account "$file"
+    jq -e ".env | $KEY_SET | $KEY_TOKEN | length > 0" "$file" >/dev/null \
+        || die "$LABEL has no token, its key is in its headers. Keep new headers with: claude-switch key import NAME"
+    read_token "$LABEL"
+    # The store was unlocked while the token was typed.
+    [ -f "$file" ] || die "$LABEL is gone, nothing changed."
+    [ "$(live_key || true)" != "$file" ] || active=yes
+    CLAUDE_SWITCH_TOKEN=$TOKEN jq ".env |= if ($KEY_SET | .ANTHROPIC_AUTH_TOKEN) != null
+        then .ANTHROPIC_AUTH_TOKEN = env.CLAUDE_SWITCH_TOKEN else .ANTHROPIC_API_KEY = env.CLAUDE_SWITCH_TOKEN end" \
+        "$file" > "$file.tmp"
+    store_key "$file"
+    if [ -n "$active" ]; then
+        set_key_env "$file"
+        printf 'Renewed %s. Running sessions take the new token at their next request.\n' "$LABEL"
+    else
+        printf 'Renewed the gateway key %s.\n' "$LABEL"
+    fi
+}
+
+# Forgets the gateway key NAME. The active key is emptied in settings.json first, as on a switch to the
+# claude.ai login.
+key_remove() {
+    local file
+    file=$(require_account "$1") || exit 1
+    is_key "$file" || die "$1 is a claude.ai account. To forget it, remove ~/.claude-accounts/${file##*/}"
+    read_account "$file"
+    if [ "$(live_key || true)" = "$file" ]; then
+        set_key_env
+        rm -f "$file"
+        printf 'Removed the gateway key %s, and emptied its entries in ~/.claude/settings.json.\n' "$LABEL"
+    else
+        rm -f "$file"
+        printf 'Removed the gateway key %s.\n' "$LABEL"
+    fi
+}
+
+# Keeps, renews or forgets a gateway key account. ACTION NAME [OPTIONS]
+cmd_key() {
+    local action=${1:-} name
+    [ $# -ge 2 ] || key_usage
+    name=$(trim "$2")
+    shift 2
+    case $action in
+        import|add) key_new "$action" "$name" "$@" ;;
+        renew)
+            [ $# -eq 0 ] || key_usage
+            key_renew "$name"
+            ;;
+        remove)
+            [ $# -eq 0 ] || key_usage
+            key_remove "$name"
+            ;;
+        *) key_usage ;;
+    esac
 }
 
 # One switch, sign-in or refresh at a time on the store. A refresh holds it while its folder has the
@@ -450,6 +653,7 @@ apply_account() {
     local stopped=""
     [ -f "$CREDENTIALS" ] || printf '{}\n' > "$CREDENTIALS"
     [ -f "$CONFIG" ] || printf '{}\n' > "$CONFIG"
+    WRITING=("$CREDENTIALS.switch" "$CONFIG.switch")
     jq --slurpfile account "$1" "$DROP_LOGIN + \$account[0].login" "$CREDENTIALS" > "$CREDENTIALS.switch"
     jq --slurpfile account "$1" "$DROP_CACHES | .oauthAccount = \$account[0].oauthAccount" "$CONFIG" > "$CONFIG.switch"
     # A stop between the renames would leave the login of one account under the name of the other, so
@@ -457,6 +661,7 @@ apply_account() {
     trap 'stopped=1' TERM INT HUP
     mv "$CREDENTIALS.switch" "$CREDENTIALS"
     mv "$CONFIG.switch" "$CONFIG"
+    WRITING=()
     trap 'exit 143' TERM INT HUP
     [ -z "$stopped" ] || exit 143
 }
@@ -526,11 +731,45 @@ desktop_switch() {
     "$DESKTOP_HELPER" start 9>&- || warn "Start Claude Desktop again by hand."
 }
 
+# The variables of this shell that a claude started from it takes before the account FILE. claude ranks a
+# cloud provider, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY, then CLAUDE_CODE_OAUTH_TOKEN before the
+# claude.ai login, and what settings.json sets, "" too, goes before the shell. CLAUDE_CONFIG_DIR takes
+# another folder altogether.
 warn_environment() {
-    local var
-    for var in CLAUDE_CONFIG_DIR ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN; do
-        [ -z "${!var:-}" ] || warn "$var is set in this shell, a claude started from here doesn't follow the switch."
+    local var value
+    [ -z "${CLAUDE_CONFIG_DIR:-}" ] \
+        || warn "CLAUDE_CONFIG_DIR is set in this shell, a claude started from here doesn't follow the switch."
+    for var in CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY ANTHROPIC_AUTH_TOKEN \
+        ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN; do
+        # The token of a key, and what claude ranks after it, doesn't count.
+        ! jq -e --arg var "$var" '.env[$var] // "" | length > 0' "$1" >/dev/null 2>&1 || break
+        value=${!var:-}
+        case ${value,,} in
+            ""|0|false|no|off) continue ;;
+        esac
+        jq -e -s --arg var "$var" '(.[0] // {}) | .env // {} | has($var)' "$SETTINGS" >/dev/null 2>&1 && continue
+        warn "$var is set in this shell, a claude started from here doesn't follow the switch."
     done
+}
+
+# What settings.json sets that claude takes before the account FILE, ranked as claude ranks them: a cloud
+# provider before everything, then a gateway token, then apiKeyHelper, CLAUDE_CODE_OAUTH_TOKEN and a
+# profile named in ANTHROPIC_PROFILE, then the claude.ai login. A gateway key that sends only headers
+# ranks with the login.
+remind_overrides() {
+    local rank=7 override
+    read_account "$1"
+    if is_key "$1"; then
+        rank=$(jq -r ".env | $KEY_SET | if $KEY_TOKEN != \"\" then 2 else 7 end" "$1")
+    fi
+    override=$(jq -r -s --argjson rank "$rank" '(.[0] // {}) as $settings | ($settings.env // {}) as $vars
+        | [(("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
+                | select($vars[.] // "" | tostring | ascii_downcase | IN("", "0", "false", "no", "off") | not) | [1, .]),
+            (select(($settings.apiKeyHelper // "") != "") | [4, "apiKeyHelper"]),
+            ("CLAUDE_CODE_OAUTH_TOKEN" | select(($vars[.] // "") != "") | [5, .]),
+            ("ANTHROPIC_PROFILE" | select(($vars[.] // "") != "") | [6, .])]
+        | map(select(.[0] < $rank)) | first | .[1] // empty' "$SETTINGS" 2>/dev/null) || return 0
+    [ -z "$override" ] || warn "~/.claude/settings.json sets $override, which claude uses before $LABEL."
 }
 
 switch_to() {
@@ -541,11 +780,14 @@ switch_to() {
         return 0
     fi
     require_kept_key
+    # The active key goes out of settings.json once the login is in place.
     key=$(live_key || true)
+    [ -z "$key" ] || require_writable_settings
     if [ "$file" = "$(live_file || true)" ]; then
         if [ -n "$key" ]; then
             set_key_env
-            warn_environment
+            warn_environment "$file"
+            remind_overrides "$file"
             printf 'Switched to %s.\n' "$LABEL"
         else
             printf 'Already on %s.\n' "$LABEL"
@@ -567,7 +809,8 @@ switch_to() {
     release_locks
     [ "$(live_file || true)" = "$file" ] || die "A running session wrote over the switch. Run it again."
     [ -z "$key" ] || set_key_env
-    warn_environment
+    warn_environment "$file"
+    remind_overrides "$file"
     check_login_keys
     printf 'Switched to %s.\n' "$LABEL"
     web_switch "$file"
@@ -580,6 +823,8 @@ cmd_login() {
     local file known="" answer problem wanted="" wanted_email=""
     if [ $# -ge 1 ] && [ "${1#-}" = "$1" ]; then
         wanted=$(require_account "$1") || exit 1
+        ! is_key "$wanted" || die "$1 is a gateway key, it has no sign-in. Give it a new token with:" \
+            "claude-switch key renew $(printf %q "$1")"
         shift
         read_account "$wanted"
         wanted_email=$EMAIL
@@ -896,6 +1141,7 @@ cmd_list() {
         printf '%s %-28s %-36s %-6s %s\n' "$marker" "$LABEL" "$EMAIL" "$PLAN" "$ENDS"
     done
     remind_unkept_key
+    [ -z "$live" ] || remind_overrides "$live"
     remind_signins
 }
 
@@ -924,6 +1170,7 @@ cmd_prompt() {
     while :; do
         lock_store
         save_live
+        save_live_key
         unlock_store
         live=$(active_file || true)
         files=("$STORE"/*.json)
@@ -942,6 +1189,7 @@ cmd_prompt() {
             printf '  %2d) %-56s %-6s %-17s %s\n' "$row" "$shown" "$PLAN" "$when" "$here"
         done
         remind_unkept_key
+        [ -z "$live" ] || remind_overrides "$live"
         remind_signins
         printf '\n   a) Add an account\n   r) Rename an account\n   q) Quit\n\n'
         if ! read -r -p 'Select an account to switch to: ' choice; then
@@ -980,9 +1228,12 @@ command -v flock >/dev/null || die "flock is required."
 command -v claude >/dev/null || die "claude is not in the PATH."
 
 lock_store
+# What a switch killed on the way left aside. No other run writes there while the store is locked.
+rm -f "$CREDENTIALS.switch" "$CONFIG.switch" "$(settings_target).switch"
 recover_refreshes
 repair_live
 save_live
+save_live_key
 
 case ${1:-} in
     "")

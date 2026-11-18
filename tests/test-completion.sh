@@ -42,8 +42,9 @@ account "" lucas@example.com
 account work lucas@example.org
 account "my laptop" other@example.net
 account '$(touch PWNED)' x@example.com
+jq -n '{kind: "key", name: "gw", env: {ANTHROPIC_AUTH_TOKEN: "secret"}}' > "$STORE/key_gw.json"
 LAPTOP='my\ laptop' RUN='\$\(touch\ PWNED\)'
-ACCOUNTS=(lucas@example.com work lucas@example.org "$LAPTOP" other@example.net "$RUN" x@example.com)
+ACCOUNTS=(lucas@example.com work lucas@example.org "$LAPTOP" other@example.net "$RUN" x@example.com gw)
 COMMANDS=(list login key rename refresh help)
 BEFORE=$(cd "$STORE" && ls -A && md5sum ./*.json)
 
@@ -55,13 +56,25 @@ check "first word: by its beginning" 'expect login | diff - "$T/got"'
 offers "claude-switch -" > "$T/got"
 check "an option: -h and --help" 'expect -h --help | diff - "$T/got"'
 offers "claude-switch login " > "$T/got"
-check "login: the accounts only" 'expect "${ACCOUNTS[@]}" | diff - "$T/got"'
+check "login: the claude.ai accounts only" 'expect "${ACCOUNTS[@]:0:7}" | diff - "$T/got"'
+offers "claude-switch rename " > "$T/got"
+check "rename: every account" 'expect "${ACCOUNTS[@]}" | diff - "$T/got"'
 offers "claude-switch rename wo" > "$T/got"
 check "rename: an account" 'expect work | diff - "$T/got"'
 offers "claude-switch refresh " > "$T/got"
 check "refresh: --force" 'expect --force | diff - "$T/got"'
 offers "claude-switch key " > "$T/got"
-check "key: import and add" 'expect add import | diff - "$T/got"'
+check "key: import, add, renew and remove" 'expect add import remove renew | diff - "$T/got"'
+offers "claude-switch key remove " > "$T/got"
+check "key remove: the gateway keys only" 'expect gw | diff - "$T/got"'
+offers "claude-switch key renew " > "$T/got"
+check "key renew: the gateway keys only" 'expect gw | diff - "$T/got"'
+offers "claude-switch key add new --like " > "$T/got"
+check "key add --like: the gateway keys only" 'expect gw | diff - "$T/got"'
+offers "claude-switch key add new --base-url " > "$T/got"
+check "key add, another option: nothing" '[ ! -s "$T/got" ]'
+offers "claude-switch key import " > "$T/got"
+check "key import: nothing for the new name" '[ ! -s "$T/got" ]'
 offers "claude-switch list " > "$T/got"
 check "list: nothing" '[ ! -s "$T/got" ]'
 offers "claude-switch rename work " > "$T/got"

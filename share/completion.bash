@@ -43,12 +43,14 @@ _claude_switch_words() {
     WORDS+=("$word")
 }
 
-# Each name and email of the accounts, one per line.
+# Each name and email of the accounts, one per line: of all of them, of the claude.ai ones (logins), or the
+# names of the gateway keys (keys). [KIND]
 _claude_switch_accounts() {
     local files
     mapfile -t files < <(compgen -G "$HOME/.claude-accounts/*.json")
-    [ "${#files[@]}" -eq 0 ] || jq -r '.name, .oauthAccount.emailAddress | strings | select(length > 0)' \
-        "${files[@]}" 2>/dev/null
+    [ "${#files[@]}" -eq 0 ] || jq -r --arg kind "${1:-all}" 'if $kind == "keys" then select(.kind == "key") | .name
+        elif $kind == "logins" then select(.kind != "key") | .name, .oauthAccount.emailAddress
+        else .name, .oauthAccount.emailAddress end | strings | select(length > 0)' "${files[@]}" 2>/dev/null
 }
 
 _claude_switch() {
@@ -71,9 +73,13 @@ _claude_switch() {
                 printf '%s\n' list login key rename refresh help
                 _claude_switch_accounts
                 ;;
-            3:login | 3:rename) _claude_switch_accounts ;;
-            3:key) printf '%s\n' import add ;;
+            3:login) _claude_switch_accounts logins ;;
+            3:rename) _claude_switch_accounts ;;
+            3:key) printf '%s\n' import add renew remove ;;
             3:refresh) printf '%s\n' --force ;;
+            # No case in this case: bash 5.1 breaks the whole function on one inside a process substitution.
+            4:key) [ "${WORDS[2]}" != renew ] && [ "${WORDS[2]}" != remove ] || _claude_switch_accounts keys ;;
+            *:key) [ "${WORDS[-2]}" != --like ] || _claude_switch_accounts keys ;;
         esac
     )
 }
