@@ -1,71 +1,85 @@
 # How a switch works
 
+This page explains what `claude-switch NAME` does to Claude Code. claude.ai in Chrome and Claude Desktop
+have pages of their own, [chrome.md](chrome.md) and [desktop.md](desktop.md), and so do gateway keys,
+[gateway-keys.md](gateway-keys.md).
+
 ## One ~/.claude for every account
 
 Claude Code keeps the login in `~/.claude/.credentials.json` and the account in `oauthAccount` of
-`~/.claude.json`. A switch changes those two and nothing else, so the rules, MCP servers, sessions and
-memory are the same whatever the account. A `CLAUDE_CONFIG_DIR` per account was the first version and
-it was wrong: the rules load twice (user memory plus the project walk up to the home folder), the
-sessions of one account disappear from the other, and dev-ai only syncs `~/.claude`.
+`~/.claude.json`. A switch changes those two and nothing else, so the settings, rules, MCP servers,
+sessions and memory are the same on every account.
+
+A `CLAUDE_CONFIG_DIR` per account was the first version of this tool, and it was the wrong one. The
+sessions of one account disappear from the other, every account needs its own settings and MCP servers,
+and the rules load twice: once as user memory, and once on the walk up from the project to the home
+folder.
 
 ## The store
 
-Each account is one file, `~/.claude-accounts/<email>_<first 8 characters of the organization>.json`,
-mode 600 in a folder of mode 700. It holds `name`, `login`, `oauthAccount`, and `dead` once a refresh
-was refused.
+Each claude.ai account is one file, `~/.claude-accounts/<email>_<organization>.json`, where
+`<organization>` is the first 8 characters of the organization id. The files are mode 600 in a folder of
+mode 700. Each one holds:
 
-`login` is what Claude Code's own logout deletes with the login (read in the 2.1.314 binary):
+- `name`, the name you gave the account, or nothing to show its email instead
+- `login`, the part of `.credentials.json` that belongs to the account
+- `oauthAccount`, the account of `~/.claude.json`
+- `dead`, the day a refresh was refused, once that happened
+
+`login` holds what Claude Code's own logout deletes with the login, read in Claude Code 2.1.314:
 `claudeAiOauth`, `designOauth`, `cloudSessionsOauth`, `organizationUuid`, `trustedDeviceToken`,
-`trustedDeviceEnrolledAfterRefusalAtMs` and `enterpriseGateway`. `mcpOAuth` never moves. When a later
-Claude Code adds another key to `.credentials.json`, the switch says so, because it doesn't move it.
+`trustedDeviceEnrolledAfterRefusalAtMs` and `enterpriseGateway`. The logins of MCP servers, `mcpOAuth`,
+never move. When a later Claude Code adds another field to `.credentials.json`, every switch says so,
+because it doesn't move it.
 
-## A switch
+## A switch, step by step
 
-1. Every command takes the store lock (`flock` on `~/.claude-accounts/.lock`) and first repairs what an
-   interruption left: a login a killed refresh rotated comes back to its account, and a switch cut
-   between its two renames is completed (the live tokens equal to another stored account's).
-2. The live login is saved to its account, since refresh tokens rotate. A login Claude Code emptied
-   after a refused refresh is never saved over the stored one.
-3. The switch takes the locks Claude Code takes itself with `mkdir`: `~/.claude/.oauth_refresh.lock`,
-   `~/.claude.lock` and `~/.claude.json.lock`. A holder touches its lock every 5 seconds, so one older
-   than 15 seconds is dead.
-4. Both files are written aside, then renamed. TERM, INT and HUP wait until the second rename, so a
-   stop never leaves the login of one account under the name of the other.
-5. Claude Code clears some account caches of `~/.claude.json` at its own logout. The switch clears the
-   same ones, and Claude Code fetches them again.
-6. claude.ai in Chrome and Claude Desktop follow, see [chrome.md](chrome.md) and
-   [desktop.md](desktop.md).
+1. Every command takes the store lock, a `flock` on `~/.claude-accounts/.lock`, so one switch, sign-in
+   or refresh runs at a time.
+2. It repairs what an interruption left. A login that a killed refresh already rotated goes back to its
+   account, and a switch cut between its two renames is completed.
+3. It saves the live login to its account. Refresh tokens rotate, so the stored copy would be outdated
+   otherwise. A login that Claude Code emptied after a refused refresh is never saved over the stored one.
+4. It takes the locks Claude Code takes itself with `mkdir`: `~/.claude/.oauth_refresh.lock`,
+   `~/.claude.lock` and `~/.claude.json.lock`. Without them, a session in the middle of a write would
+   bring the previous account back. A holder touches its lock every 5 seconds, so a lock older than 15
+   seconds is taken as dead.
+5. It writes both files aside, then renames them over the old ones, so a running session never reads
+   half a file. TERM, INT and HUP wait until the second rename, so a stop never leaves the login of one
+   account under the name of the other.
+6. It clears the caches Claude Code clears at its own logout, the model and usage caches of
+   `~/.claude.json` for instance. Claude Code fetches them again.
+7. claude.ai in Chrome and Claude Desktop follow.
 
-A name or an email that matches several accounts is refused, for a switch, a login and a rename.
+A name or an email that matches several accounts is refused, for a switch, a sign-in and a rename. Name
+the accounts in the prompt (`r`) and use the names.
 
-## Gateway keys
+## Running sessions
 
-A gateway key account is `~/.claude-accounts/key_<name>.json`, mode 600, holding `kind: "key"`, `name`
-and `env`: the gateway entries listed in the README. The active key is the account whose token is the
-one in the `env` of `~/.claude/settings.json`, compared inside jq and never printed. It goes before the
-claude.ai login in `list`, the prompt and the choice claude makes.
+Running Claude Code sessions read the login again at their next request, so they move to the new
+account without a restart. Remote Control is the exception. Each session registers with the account the
+CLI is on, so a switch disconnects it, and `/remote-control` registers the session with the new account.
 
-A switch to a key takes every gateway entry out of that `env`, puts in the key's, writes the file aside
-with the mode the old one had and renames it. A switch to a claude.ai account does the claude.ai switch
-above, then takes the gateway entries out, only when a key was active, so a machine without keys never
-has `settings.json` rewritten. A token in `settings.json` that no account keeps stops every switch
-until `claude-switch key import NAME` keeps it.
+## Adding and renewing accounts
 
-## Signing in and renewing
+`claude-switch login` signs in beside the store, in a folder of its own, and never in `~/.claude`, so the
+live account changes only on a switch. It runs `claude auth login` there, saves the new account and asks
+for a name.
 
-`claude-switch login` signs in beside the store, in a folder of its own, so the live account changes
-only on a switch. `claude-switch login ACCOUNT` renews an account: claude.ai in Chrome goes to it
-first, the sign-in page gets its email (`claude auth login --email`), and Chrome comes back to the
-live account however the sign-in ends.
+`claude-switch login NAME` renews the sign-in of an account that is already saved. The sign-in page uses
+the claude.ai session of the browser, so claude.ai in Chrome goes to that account first, and the page
+gets its email through `claude auth login --email`. Chrome comes back to the live account however the
+sign-in ends. When the browser signs in another account anyway, that one is saved, and the account you
+asked for stays as it was.
 
-Only a new sign-in moves the date a sign-in ends (about 28 days), the refresh doesn't. From 7 days
-ahead, `list`, the prompt and a switch say when it ends, with the command that renews the account,
-`claude-switch login NAME`. The days are the days of the calendar here, so a sign-in that ends on
-09/11 is in 7 days all through 02/11. The refresh announces it on the desktop from 3 days ahead. To
-renew the live account, `/login` in a session works too. Never `/login` to another account and never
-`/logout`: `/logout` revokes the refresh token on the server, and the copy in the store dies with it.
+Only a new sign-in moves the day a sign-in ends, about 28 days later. The background refresh renews the
+access token, not the sign-in, see [refresh.md](refresh.md). To renew the live account, `/login` in a
+Claude Code session works too. Never `/login` to another account: the live login would be replaced
+before its last rotation is saved. And never `/logout`, which revokes the refresh token on the server,
+so the copy in the store stops working with it.
 
-## Remote Control
+## Names
 
-Each session registers with the account the CLI is on. A switch disconnects Remote Control, and
-`/remote-control` registers the session with the new account.
+A name can't be empty, start with `-`, hold control characters, be a command of claude-switch (`list`,
+`login`, `key`, `rename`, `refresh`, `help`) or be only digits, since the prompt selects accounts by
+number. Two accounts can't share a name.

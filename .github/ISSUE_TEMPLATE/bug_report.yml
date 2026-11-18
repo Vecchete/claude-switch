@@ -1,0 +1,48 @@
+name: Bug report
+description: Something claude-switch does wrong.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Never paste the content of `~/.claude-accounts`, `~/.claude/.credentials.json` or `~/.claude/settings.json`: they hold logins and keys.
+        A security problem goes through the [security policy](https://github.com/Vecchete/claude-switch/security/policy), not through an issue.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what claude-switch printed, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: list
+    attributes:
+      label: Output of claude-switch list
+      description: It prints no token. Remove any email you don't want public.
+      render: text
+  - type: input
+    id: claude
+    attributes:
+      label: Claude Code version
+      description: The output of `claude --version`.
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Distribution
+      placeholder: Ubuntu 24.04
+    validations:
+      required: true
+  - type: input
+    id: apps
+    attributes:
+      label: Chrome and Claude Desktop versions
+      description: When the problem is about claude.ai in Chrome or about Claude Desktop.
+  - type: checkboxes
+    id: secrets
+    attributes:
+      label: Before you send it
+      options:
+        - label: This report holds no token, cookie or key.
+          required: true
