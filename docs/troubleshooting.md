@@ -97,8 +97,42 @@ After that the registration moves with the account. See [chrome.md](chrome.md#re
 
 ### `Claude Desktop is open, so it stays on its account.`
 
-Desktop must be closed for a switch, and you answered no, or there was no terminal to ask. Close
-Desktop, then run the same switch again to bring it along.
+Desktop must be closed for a switch, and you answered no, or the switch came from a script without a
+terminal. Close Desktop, then run the same switch again to bring it along.
+
+## Automatic switching
+
+### `LEFT` shows `-`
+
+Nothing could be read for that account: an Anthropic API key, which has nothing to read, a gateway that
+doesn't answer `/key/info`, an access token that ran out and waits for the background refresh, or no
+answer from the usage endpoint. Each reading says why in `~/.claude-accounts/.usage/<account>.json`, in
+`error`. A reading is tried again 5 minutes later.
+
+### The machine didn't move when an account ran out
+
+Check how automatic switching stands, and what it did:
+
+```bash
+claude-switch auto
+systemctl --user list-timers claude-switch-watch.timer
+tail ~/.claude-accounts/.auto.log
+```
+
+`claude-switch auto` says when the hook went missing from `~/.claude/settings.json`, and `claude-switch
+auto on` puts it back. The watch runs only while a Claude Code session is open. A switch you typed holds its
+account until it runs out.
+
+### A session stopped on a limit and didn't carry on
+
+When no account had room, nothing switched and the session waits for its limit to reset: Claude Code says
+when. A desktop notification names the account that has room again first. A session is woken 3 times in 10
+minutes at most. Otherwise, type `continue` in it, and please open an issue with the output of
+`claude --version`.
+
+### `usage.py is not in ~/.local/share/claude-switch, run install.sh first.`
+
+`claude-switch auto on` needs the helper `install.sh` puts there. Run `./install.sh` in the checkout.
 
 ## Warnings after a switch
 

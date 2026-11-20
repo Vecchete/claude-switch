@@ -16,6 +16,11 @@
 # claude.ai in Chrome follows a switch when the companion in ~/.local/share/claude-switch is installed:
 # its extension swaps the claude.ai session cookies, see chrome-host.py there. Claude Desktop follows too,
 # through desktop.py there, once it is closed.
+#
+# With claude-switch auto on, the machine goes to the best account with room by itself: the
+# claude-switch-watch timer checks every 5 minutes while a session is open, and a StopFailure hook in
+# ~/.claude/settings.json moves the machine as soon as a session meets a limit, then wakes that session.
+# usage.py in ~/.local/share/claude-switch reads what each account has left and ranks them.
 
 set -euo pipefail
 shopt -s nullglob
@@ -27,6 +32,27 @@ SETTINGS=$HOME/.claude/settings.json
 STORE=$HOME/.claude-accounts
 CHROME_HOST=$HOME/.local/share/claude-switch/chrome-host.py
 DESKTOP_HELPER=$HOME/.local/share/claude-switch/desktop.py
+USAGE_HELPER=$HOME/.local/share/claude-switch/usage.py
+SELF=$(readlink -f "$0")
+# When this run started: a hook tells by it whether its session failed before the last switch.
+STARTED=$(date +%s%3N)
+
+# Automatic switching is on while this file is there.
+AUTO_FLAG=$STORE/.auto
+# The account a switch typed by hand holds while automatic switching is on, until it runs out.
+HOLD=$STORE/.hold
+# The order the kinds of account rank in, see claude-switch auto order, and the one with no such file.
+ORDER_FILE=$STORE/.auto-order
+DEFAULT_ORDER="ultra key max"
+# When the last switch happened, in milliseconds.
+SWITCHED=$STORE/.switched
+# What the automatic switches did and what claude-switch said meanwhile: a hook's stderr goes to Claude.
+AUTO_LOG=$STORE/.auto.log
+WATCH_TIMER=claude-switch-watch.timer
+# What Claude Code passes to the StopFailure hook of claude-switch. A budget comes back as unknown.
+HOOK_MATCHER="rate_limit|billing_error|authentication_failed|unknown"
+# A hook entry of claude-switch in settings.json, whatever path it was installed at.
+OWN_HOOK='any(.hooks[]?; .command | strings | (endswith(" hook") and contains("claude-switch")))'
 
 # A login with a token in it. claude empties both tokens when the server refuses a refresh.
 SIGNED_IN='.claudeAiOauth.accessToken | type == "string" and length > 0'
@@ -74,6 +100,13 @@ WRITING=()
 SIGNIN=""
 STUB=""
 DEAD=0
+# Set while claude-switch switches on its own: Desktop restarts without a question.
+AUTO=""
+# The account the last route went to, and why, for the hook.
+ROUTED_TO=""
+ROUTED_WHY=""
+# What each account has left, by file, for list and the prompt.
+declare -A LEFT_OF=()
 # Set while claude.ai in Chrome is on the account of a sign-in rather than on the live one.
 WEB_AWAY=""
 
@@ -94,7 +127,7 @@ usage() {
 Usage:
   claude-switch                          Prompt to switch, add or rename.
   claude-switch NAME                     Switch the whole machine to NAME, a name or an email.
-  claude-switch list                     Print the accounts. * marks the active one.
+  claude-switch list                     Print the accounts and what each has left. * marks the active one.
   claude-switch login [ACCOUNT] [OPTIONS]
                                          Sign in an account and keep it here. It doesn't switch.
                                          With ACCOUNT, a name or an email already here, it renews
@@ -114,6 +147,14 @@ Usage:
   claude-switch refresh [--force]        Refresh the login of the accounts that are not active.
                                          The claude-switch-refresh timer runs it at boot and every
                                          4 hours. --force refreshes them even when not due.
+  claude-switch auto [on|off]            Turn automatic switching on or off, or say how it stands.
+                                         On, the machine goes to the best account with room: every 5
+                                         minutes while a session is open, and as soon as a session
+                                         meets a limit, which then carries on by itself.
+  claude-switch auto order [KIND...]     Say which kind of account comes first, or print the order. A
+                                         KIND is ultra, a subscription with no 5-hour limit, max, Max
+                                         and the other plans, or key, an API or gateway key. Those left
+                                         out follow in the order ultra, key, max.
   claude-switch help                     Print this help, as -h and --help do.
 
 A switch changes the account only, wherever you call it. New sessions start on it and running
@@ -127,6 +168,11 @@ Claude Desktop stay on their account.
 
 A sign-in lasts about 28 days, and only a new sign-in moves its end. From 7 days before, list, the
 prompt and a switch say when it ends, with the claude-switch login that renews it.
+
+The best account with room is an Ultra subscription first, then a key, then another plan, unless
+claude-switch auto order says otherwise: only the weekly limit counts. An account that stops a session
+waits until its limit resets. A switch typed by hand stays while automatic switching is on, until that
+account runs out.
 
 Don't use /logout on an account you want to keep: it revokes the login saved here too.
 To forget an account, remove its file in ~/.claude-accounts, or a gateway key with claude-switch key
@@ -263,7 +309,7 @@ name_problem() {
             printf 'A name must not be empty, start with - or hold control characters.'
             return 0
             ;;
-        list|login|key|rename|refresh|help)
+        list|login|key|rename|refresh|help|auto|watch|hook)
             printf '%s is a command of this script, choose another name.' "$1"
             return 0
             ;;
@@ -372,22 +418,17 @@ require_writable_settings() {
         || die "~/.claude/settings.json is $target, in a folder this user can't write, nothing changed."
 }
 
-# Puts the entries of the key account FILE in the env of settings.json in place of the gateway entries
-# there, or only empties those without FILE: an entry taken out stays as "", which claude takes as unset,
-# so running sessions leave it too. The rest of the file stays, and a missing or empty one is taken as {}.
-# It's written aside and renamed, since running sessions read it at any moment, with the mode, owner and
-# group it had. The token never goes on a command line. A session keeps the ANTHROPIC_MODEL it started on,
-# which is said. [FILE]
-set_key_env() {
-    local target source=/dev/null model new_model
+# Writes settings.json from FILTER, a jq program run on what it holds, {} when it's missing or empty, with
+# ARGS for jq. The rest of the file stays. It's written aside and renamed, since running sessions read it at
+# any moment, with the mode, owner and group it had. FILTER [ARGS...]
+write_settings() {
+    local filter=$1 target source=/dev/null
+    shift
     require_writable_settings
     target=$(settings_target)
     [ ! -s "$target" ] || source=$target
-    model=$(jq -r -s "(.[0] // {}) | .env // {} | $KEY_SET | .ANTHROPIC_MODEL // empty" "$source" 2>/dev/null || true)
     WRITING=("$target.switch")
-    jq -n --slurpfile settings "$source" --slurpfile account "${1:-/dev/null}" \
-        "(\$settings[0] // {}) | ((.env // {} | with_entries(if .key | IN($KEY_ENV[]) then .value = \"\" else . end))
-        + (\$account[0].env // {})) as \$env | if \$env == {} then del(.env) else .env = \$env end" \
+    jq -n --slurpfile settings "$source" "$@" "(\$settings[0] // {}) | $filter" \
         > "$target.switch" || die "~/.claude/settings.json can't be read as JSON, nothing changed."
     if [ ! -e "$target" ]; then
         mv "$target.switch" "$target"
@@ -399,6 +440,20 @@ set_key_env() {
         rm -f "$target.switch"
     fi
     WRITING=()
+}
+
+# Puts the entries of the key account FILE in the env of settings.json in place of the gateway entries
+# there, or only empties those without FILE: an entry taken out stays as "", which claude takes as unset,
+# so running sessions leave it too. The token never goes on a command line. A session keeps the
+# ANTHROPIC_MODEL it started on, which is said. [FILE]
+set_key_env() {
+    local target source=/dev/null model new_model
+    target=$(settings_target)
+    [ ! -s "$target" ] || source=$target
+    model=$(jq -r -s "(.[0] // {}) | .env // {} | $KEY_SET | .ANTHROPIC_MODEL // empty" "$source" 2>/dev/null || true)
+    write_settings "((.env // {} | with_entries(if .key | IN($KEY_ENV[]) then .value = \"\" else . end))
+        + (\$account[0].env // {})) as \$env | if \$env == {} then del(.env) else .env = \$env end" \
+        --slurpfile account "${1:-/dev/null}"
     new_model=$(jq -r ".env // {} | $KEY_SET | .ANTHROPIC_MODEL // empty" "${1:-/dev/null}")
     if [ -n "$model" ] && [ "$model" != "$new_model" ]; then
         warn "A running session that started on the model $model keeps it: /model in it picks another."
@@ -413,9 +468,16 @@ switch_to_key() {
         return 0
     fi
     set_key_env "$file"
+    note_switch
     warn_environment "$file"
     remind_overrides "$file"
     printf 'Switched to %s, a gateway key. claude.ai in Chrome and Claude Desktop stay on their account.\n' "$LABEL"
+}
+
+# When the last switch happened, for automatic switching: a session that failed before it only has to send
+# its request again.
+note_switch() {
+    [ ! -f "$AUTO_FLAG" ] || date +%s%3N > "$SWITCHED"
 }
 
 key_usage() {
@@ -557,6 +619,7 @@ key_renew() {
         then .ANTHROPIC_AUTH_TOKEN = env.CLAUDE_SWITCH_TOKEN else .ANTHROPIC_API_KEY = env.CLAUDE_SWITCH_TOKEN end" \
         "$file" > "$file.tmp"
     store_key "$file"
+    forget_refusal "$file"
     if [ -n "$active" ]; then
         set_key_env "$file"
         printf 'Renewed %s. Running sessions take the new token at their next request.\n' "$LABEL"
@@ -600,6 +663,12 @@ cmd_key() {
             ;;
         *) key_usage ;;
     esac
+}
+
+# A new token or a new sign-in ends the wait a refused account was in. FILE
+forget_refusal() {
+    local stem=${1##*/}
+    rm -f "$STORE/.usage/${stem%.json}.refused.json"
 }
 
 # One switch, sign-in or refresh at a time on the store. A refresh holds it while its folder has the
@@ -702,20 +771,25 @@ web_back() {
 }
 
 # Claude Desktop follows the switch, when it is installed. It must be closed for that, so an open one is
-# restarted when the terminal says yes. FILE
+# restarted: on a switch claude-switch makes by itself, and on one typed in a terminal unless it says no.
+# FILE
 desktop_switch() {
-    local account status=0 answer=""
+    local account status=0 answer=no
     [ -x "$DESKTOP_HELPER" ] || return 0
     account=$(jq -r '.oauthAccount.accountUuid // empty' "$1")
     [ -n "$account" ] || return 0
     "$DESKTOP_HELPER" switch "$account" 9>&- || status=$?
     [ "$status" -eq 3 ] || return 0
-    if [ -t 0 ] && [ -t 1 ]; then
-        read -r -t 60 -p "Claude Desktop is open. Restart it on $LABEL? Code and Cowork tasks running in it stop. [y/N] " \
+    if [ -n "$AUTO" ]; then
+        answer=yes
+    elif [ -t 0 ] && [ -t 1 ]; then
+        answer=""
+        read -r -t 60 -p "Claude Desktop is open. Restart it on $LABEL? Code and Cowork tasks running in it stop. [Y/n] " \
             answer || printf '\n'
+        answer=${answer:-yes}
     fi
     case $answer in
-        y|Y|yes|Yes) ;;
+        y|Y|yes|Yes|YES) ;;
         *)
             printf 'Claude Desktop is open, so it stays on its account. Close it and run claude-switch %q to bring it along.\n' \
                 "$LABEL"
@@ -786,6 +860,7 @@ switch_to() {
     if [ "$file" = "$(live_file || true)" ]; then
         if [ -n "$key" ]; then
             set_key_env
+            note_switch
             warn_environment "$file"
             remind_overrides "$file"
             printf 'Switched to %s.\n' "$LABEL"
@@ -809,6 +884,7 @@ switch_to() {
     release_locks
     [ "$(live_file || true)" = "$file" ] || die "A running session wrote over the switch. Run it again."
     [ -z "$key" ] || set_key_env
+    note_switch
     warn_environment "$file"
     remind_overrides "$file"
     check_login_keys
@@ -846,6 +922,7 @@ cmd_login() {
     lock_store
     [ ! -f "$file" ] || known=yes
     store_account "$SIGNIN/.credentials.json" "$SIGNIN/.claude.json" "$file"
+    forget_refusal "$file"
     read_account "$file"
     if [ -n "$wanted" ] && [ "$file" != "$wanted" ]; then
         warn "The browser signed in $EMAIL, not $wanted_email. $EMAIL is kept, $wanted_email is unchanged."
@@ -1130,15 +1207,302 @@ cmd_refresh() {
     [ "$DEAD" -eq 0 ]
 }
 
+auto_on() {
+    [ -f "$AUTO_FLAG" ]
+}
+
+# A switch typed by hand holds its account while automatic switching is on, until that account runs out.
+# FILE
+hold_account() {
+    auto_on || return 0
+    printf '%s\n' "${1##*/}" > "$HOLD"
+}
+
+# A desktop notification of an automatic switch, when notify-send is there. TITLE BODY
+notify() {
+    command -v notify-send >/dev/null || return 0
+    notify-send --app-name="Claude accounts" "$1" "$2" 9>&- 2>/dev/null || true
+}
+
+# True when settings.json holds a StopFailure hook of claude-switch.
+hook_in_settings() {
+    jq -e -s "(.[0] // {}) | [.hooks.StopFailure[]? | select($OWN_HOOK)] | length > 0" "$SETTINGS" >/dev/null 2>&1
+}
+
+# True when that hook is the one of this claude-switch, as set_auto_hook on writes it.
+hook_current() {
+    jq -e -s --arg command "$(printf '%q' "$SELF") hook" --arg matcher "$HOOK_MATCHER" '(.[0] // {})
+        | [.hooks.StopFailure[]? | select(.matcher == $matcher and (.hooks | length) == 1
+            and .hooks[0].command == $command and .hooks[0].asyncRewake == true)] | length > 0' \
+        "$SETTINGS" >/dev/null 2>&1
+}
+
+# Adds the StopFailure hook of claude-switch to settings.json, or takes it out. Claude Code runs it in the
+# background when a turn ends on a limit, and its exit 2 wakes the session. Other hooks stay. on|off
+set_auto_hook() {
+    if [ "$1" = on ]; then
+        write_settings '.hooks = ((.hooks // {}) | .StopFailure = ([.StopFailure[]? | select('"$OWN_HOOK"' | not)]
+            + [{matcher: $matcher, hooks: [{type: "command", command: $command, asyncRewake: true, timeout: 120}]}]))' \
+            --arg matcher "$HOOK_MATCHER" --arg command "$(printf '%q' "$SELF") hook"
+    else
+        write_settings '.hooks.StopFailure |= map(select('"$OWN_HOOK"' | not))
+            | if .hooks.StopFailure == [] then del(.hooks.StopFailure) else . end
+            | if .hooks == {} then del(.hooks) else . end'
+    fi
+}
+
+# The order the kinds of account rank in, as words: ultra key max by default.
+auto_order() {
+    local order
+    order=$(head -n 1 "$ORDER_FILE" 2>/dev/null || true)
+    printf '%s\n' "${order:-$DEFAULT_ORDER}"
+}
+
+# The same, as a person reads it.
+order_text() {
+    local kind words=()
+    for kind in $(auto_order); do
+        case $kind in
+            ultra) words+=("Ultra subscriptions") ;;
+            key) words+=("API and gateway keys") ;;
+            max) words+=("Max and the other plans") ;;
+        esac
+    done
+    local IFS=,
+    printf '%s\n' "${words[*]-}" | sed 's/,/, then /g'
+}
+
+# Puts KIND... first, in that order, and the kinds left out after them in the default order. KIND...
+set_auto_order() {
+    local kind order=()
+    for kind in "$@"; do
+        kind=${kind,,}
+        [ "$kind" != api ] || kind=key
+        case $kind in
+            ultra|key|max) ;;
+            *) die "$kind is not a kind of account: ultra, max or key." ;;
+        esac
+        [[ " ${order[*]-} " != *" $kind "* ]] || die "$kind is twice in the order."
+        order+=("$kind")
+    done
+    for kind in $DEFAULT_ORDER; do
+        [[ " ${order[*]-} " == *" $kind "* ]] || order+=("$kind")
+    done
+    printf '%s\n' "${order[*]}" > "$ORDER_FILE"
+}
+
+# Turns automatic switching on or off, says how it stands, or sets the order. [on|off|order [KIND...]]
+cmd_auto() {
+    local active
+    [ "${1:-}" = order ] || [ $# -le 1 ] || die "Usage: claude-switch auto [on|off|order [KIND...]]"
+    case ${1:-} in
+        "") auto_status ;;
+        order)
+            shift
+            [ $# -le 3 ] || die "Usage: claude-switch auto order [KIND...], a KIND is ultra, max or key."
+            if [ $# -eq 0 ]; then
+                printf 'Automatic switching ranks the accounts in this order: %s.\n' "$(order_text)"
+                return 0
+            fi
+            set_auto_order "$@"
+            printf 'Automatic switching ranks the accounts in this order now: %s.\n' "$(order_text)"
+            if auto_on && ! route; then
+                printf 'No account has room now.\n'
+            fi
+            ;;
+        on)
+            [ -x "$USAGE_HELPER" ] || die "usage.py is not in ~/.local/share/claude-switch, run install.sh first."
+            hook_current || set_auto_hook on
+            : > "$AUTO_FLAG"
+            rm -f "$HOLD"
+            if ! systemctl --user enable --now "$WATCH_TIMER" >/dev/null 2>&1; then
+                warn "$WATCH_TIMER didn't start, so only a limit a session meets switches. Start it with:" \
+                    "systemctl --user enable --now $WATCH_TIMER"
+            fi
+            printf 'Automatic switching is on: the machine goes to the best account with room, every 5 minutes while a session is open and as soon as a session meets a limit.\n'
+            if ! route; then
+                printf 'No account has room now.\n'
+            elif [ -z "$ROUTED_TO" ] && active=$(active_file); then
+                read_account "$active"
+                printf 'It stays on %s, the best account with room.\n' "$LABEL"
+            fi
+            ;;
+        off)
+            ! hook_in_settings || set_auto_hook off
+            rm -f "$AUTO_FLAG" "$HOLD"
+            systemctl --user disable --now "$WATCH_TIMER" >/dev/null 2>&1 || true
+            printf 'Automatic switching is off.\n'
+            ;;
+        *) die "Usage: claude-switch auto [on|off|order [KIND...]]" ;;
+    esac
+}
+
+auto_status() {
+    local best held
+    if ! auto_on; then
+        printf 'Automatic switching is off. Turn it on with: claude-switch auto on\n'
+        return 0
+    fi
+    printf 'Automatic switching is on: the machine goes to the best account with room, every 5 minutes while a session is open and as soon as a session meets a limit.\n'
+    printf 'It ranks the accounts in this order: %s.\n' "$(order_text)"
+    hook_in_settings || warn "~/.claude/settings.json lost the hook that moves a session on: claude-switch auto on puts it back."
+    held=$STORE/$(head -n 1 "$HOLD" 2>/dev/null || true)
+    if [ -f "$HOLD" ] && [ -f "$held" ]; then
+        read_account "$held"
+        printf '%s was chosen by hand, it stays until it runs out.\n' "$LABEL"
+    fi
+    "$USAGE_HELPER" read --timeout 5 "$STORE"/*.json 2>/dev/null || true
+    if best=$("$USAGE_HELPER" best --order "$(auto_order | tr ' ' ,)" "$STORE"/*.json 2>/dev/null); then
+        read_account "$best"
+        printf 'The best account with room now is %s.\n' "$LABEL"
+    else
+        printf 'No account has room now.\n'
+    fi
+}
+
+# Once a day at most: every account is out.
+nothing_left() {
+    local first
+    first=$("$USAGE_HELPER" first "$STORE"/*.json 2>/dev/null) || first=""
+    notify_once "nothing" "No Claude account has room" "${first:+The first to have room again: $first.}"
+}
+
+# Puts the machine on the best account that has room, when the active one isn't that account, and says
+# so. ROUTED_TO and ROUTED_WHY tell where it went and why. Fails when no account has room.
+route() {
+    local active best hold="" why
+    ROUTED_TO="" ROUTED_WHY=""
+    # The log keeps its last lines.
+    if [ "$(stat -c %s "$AUTO_LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+        tail -n 2000 "$AUTO_LOG" > "$AUTO_LOG.tmp" && mv "$AUTO_LOG.tmp" "$AUTO_LOG"
+    fi
+    active=$(active_file || true)
+    # Younger than the 5 minutes between two runs of the timer, so each run reads.
+    "$USAGE_HELPER" read --max-age 240 --timeout 10 "$STORE"/*.json 2>/dev/null || true
+    if [ -f "$HOLD" ]; then
+        hold=$STORE/$(head -n 1 "$HOLD")
+        [ -f "$hold" ] || hold=""
+    fi
+    if ! best=$("$USAGE_HELPER" best ${hold:+--hold "$hold"} --order "$(auto_order | tr ' ' ,)" "$STORE"/*.json); then
+        nothing_left
+        return 1
+    fi
+    # A hold ends with its account's room.
+    [ -z "$hold" ] || [ "$best" = "$hold" ] || rm -f "$HOLD"
+    [ "$best" != "$active" ] || return 0
+    read_account "$best"
+    ROUTED_TO=$LABEL
+    if [ -z "$active" ]; then
+        why="no account was active"
+    elif why=$("$USAGE_HELPER" why "$active"); then
+        read_account "$active"
+        why="$LABEL $why"
+    else
+        why="$ROUTED_TO is the best account with room"
+    fi
+    ROUTED_WHY=$why
+    AUTO=yes
+    switch_to "$best" >> "$AUTO_LOG" 2>&1
+    AUTO=""
+    printf 'Switched to %s: %s.\n' "$ROUTED_TO" "$ROUTED_WHY"
+    notify "Switched to $ROUTED_TO" "$ROUTED_WHY."
+}
+
+# The timer runs this every 5 minutes. Without automatic switching or an open session it never gets here.
+cmd_watch() {
+    [ $# -eq 0 ] || die "Usage: claude-switch watch"
+    route || true
+}
+
+# A session is woken 3 times in 10 minutes at most, so one every account refuses doesn't loop. SESSION
+may_wake() {
+    local now
+    [ -n "$1" ] || return 0
+    now=$(date +%s%3N)
+    [ "$(awk -v since=$((now - 600000)) '$1 > since' "$STORE/.woken/$1" 2>/dev/null | wc -l)" -lt 3 ]
+}
+
+note_wake() {
+    [ -n "$1" ] || return 0
+    mkdir -p "$STORE/.woken"
+    find "$STORE/.woken" -type f -mmin +1440 -delete 2>/dev/null || true
+    date +%s%3N >> "$STORE/.woken/$1"
+}
+
+# When the request of the session failed, in milliseconds: the API error its transcript ends on, when that one is
+# from the last minute, else a moment before this run started. TRANSCRIPT
+failed_at() {
+    local when=""
+    if [ -f "$1" ]; then
+        when=$(tail -n 50 "$1" | jq -r 'select(.isApiErrorMessage == true) | .timestamp // empty' 2>/dev/null | tail -n 1)
+        # date takes an empty date for midnight.
+        [ -z "$when" ] || when=$(date -d "$when" +%s%3N 2>/dev/null || true)
+        [ -z "$when" ] || [ "$when" -gt $((STARTED - 60000)) ] || when=""
+    fi
+    printf '%s\n' "${when:-$((STARTED - 1500))}"
+}
+
+# Claude Code runs this when a turn ends on an API error, in the background, with the error on stdin. When
+# the active account met a limit, the machine moves to the best account with room, and exit 2 wakes the
+# session with a sentence on stderr for Claude, which sends its request again. claude-switch says the rest
+# in ~/.claude-accounts/.auto.log, since Claude reads the hook's stderr.
+cmd_hook() {
+    local input error text reason session active switched message budget_words
+    budget_words='budget|credit balance|insufficient_quota|spend limit'
+    input=$(head -c 1048576 || true)
+    auto_on || return 0
+    error=$(jq -r '.error // empty' <<< "$input" 2>/dev/null || true)
+    text=$(jq -r '[.last_assistant_message, .error_details] | map(strings) | join(" ")' <<< "$input" 2>/dev/null || true)
+    case $error in
+        rate_limit|billing_error|authentication_failed) reason=$error ;;
+        unknown)
+            # A gateway's budget comes back as an unknown error, only its words tell it.
+            [[ ${text,,} =~ $budget_words ]] || return 0
+            reason=budget
+            ;;
+        *) return 0 ;;
+    esac
+    session=$(jq -r '.session_id // empty' <<< "$input" 2>/dev/null | tr -cd '[:alnum:]-')
+    may_wake "$session" || return 0
+    active=$(active_file) || return 0
+    switched=$(cat "$SWITCHED" 2>/dev/null || echo 0)
+    if [ "${switched:-0}" -gt "$(failed_at "$(jq -r '.transcript_path // empty' <<< "$input" 2>/dev/null)")" ]; then
+        # The machine moved after the request failed, by another session's hook or by hand.
+        read_account "$active"
+        message="claude-switch has moved this machine to $LABEL since the request failed."
+    else
+        "$USAGE_HELPER" refuse "$active" "$reason" "$text" >/dev/null || return 0
+        # Nothing has room: Claude Code waits for the limit to reset by itself.
+        route || return 0
+        [ -n "$ROUTED_TO" ] || return 0
+        message="claude-switch moved this machine to $ROUTED_TO: $ROUTED_WHY."
+    fi
+    note_wake "$session"
+    printf '%s The request that failed can go out again now: carry on with the task where it stopped.\n' "$message" >&3
+    exit 2
+}
+
+# Brings the readings up to date and fills LEFT_OF with what each account has left.
+read_left() {
+    local file text
+    LEFT_OF=()
+    [ -x "$USAGE_HELPER" ] || return 0
+    "$USAGE_HELPER" read --timeout 5 "$STORE"/*.json 2>/dev/null || true
+    while IFS=$'\t' read -r file text; do
+        LEFT_OF[$file]=$text
+    done < <("$USAGE_HELPER" left "$STORE"/*.json 2>/dev/null || true)
+}
+
 cmd_list() {
     local file live marker
     live=$(active_file || true)
-    printf '  %-28s %-36s %-6s %s\n' ACCOUNT EMAIL PLAN UNTIL
+    read_left
+    printf '  %-28s %-36s %-6s %-11s %s\n' ACCOUNT EMAIL PLAN UNTIL LEFT
     for file in "$STORE"/*.json; do
         read_account "$file"
         marker=" "
         [ "$file" != "$live" ] || marker="*"
-        printf '%s %-28s %-36s %-6s %s\n' "$marker" "$LABEL" "$EMAIL" "$PLAN" "$ENDS"
+        printf '%s %-28s %-36s %-6s %-11s %s\n' "$marker" "$LABEL" "$EMAIL" "$PLAN" "$ENDS" "${LEFT_OF[$file]:--}"
     done
     remind_unkept_key
     [ -z "$live" ] || remind_overrides "$live"
@@ -1206,6 +1570,7 @@ cmd_prompt() {
         unlock_store
         live=$(active_file || true)
         files=("$STORE"/*.json)
+        read_left
         row=0
         printf '\nClaude Code accounts\n\n'
         for file in "${files[@]}"; do
@@ -1218,7 +1583,7 @@ cmd_prompt() {
             [ "$PLAN" != key ] || when=""
             here=""
             [ "$file" != "$live" ] || here="active"
-            printf '  %2d) %-56s %-6s %-17s %s\n' "$row" "$shown" "$PLAN" "$when" "$here"
+            printf '  %2d) %-56s %-6s %-17s %-22s %s\n' "$row" "$shown" "$PLAN" "$when" "${LEFT_OF[$file]:--}" "$here"
         done
         remind_unkept_key
         [ -z "$live" ] || remind_overrides "$live"
@@ -1236,6 +1601,7 @@ cmd_prompt() {
                 if is_row "$choice" "${#files[@]}"; then
                     lock_store
                     switch_to "${files[choice - 1]}"
+                    hold_account "${files[choice - 1]}"
                     return 0
                 fi
                 printf 'Type a number from the list, a, r or q.\n'
@@ -1258,6 +1624,19 @@ esac
 command -v jq >/dev/null || die "jq is required."
 command -v flock >/dev/null || die "flock is required."
 command -v claude >/dev/null || die "claude is not in the PATH."
+
+case ${1:-} in
+    watch)
+        # The timer runs this every 5 minutes: nothing to do without automatic switching or an open session.
+        auto_on && [ -x "$USAGE_HELPER" ] && "$USAGE_HELPER" sessions || exit 0
+        ;;
+    hook)
+        # Claude reads what the hook says: everything but its last sentence goes to the log.
+        mkdir -p "$STORE"
+        chmod 700 "$STORE"
+        exec 3>&2 >>"$AUTO_LOG" 2>&1
+        ;;
+esac
 
 lock_store
 # What a switch killed on the way left aside. No other run writes there while the store is locked.
@@ -1296,10 +1675,23 @@ case ${1:-} in
         file=$(require_account "$2") || exit 1
         rename_account "$file" "$3"
         ;;
+    auto)
+        shift
+        cmd_auto "$@"
+        ;;
+    watch)
+        shift
+        cmd_watch "$@"
+        ;;
+    hook)
+        shift
+        cmd_hook "$@"
+        ;;
     *)
         [ $# -eq 1 ] || die "Usage: claude-switch NAME"
         file=$(require_account "$1") || exit 1
         switch_to "$file"
+        hold_account "$file"
         remind_signins
         ;;
 esac

@@ -21,7 +21,9 @@ tests/run.sh switch keys     # some of them
 |---|---|---|
 | `test-switch.sh` | `switch` | The switch, the prompt, login and rename, with stand-in logins and the real `claude auth status` |
 | `test-refresh.sh` | `refresh` | The background refresh, with a stand-in claude |
-| `test-keys.sh` | `keys` | Gateway keys: import, add, renew, remove, switches between keys and claude.ai accounts, how a key is told from another, `settings.json` as it can be found (empty, missing, a link, read-only, shared with a group), the warnings, with the real `claude auth status` |
+| `test-keys.sh` | `keys` | Gateway keys: import, add, renew, remove, the prompt's question for a new account, switches between keys and claude.ai accounts, how a key is told from another, `settings.json` as it can be found (empty, missing, a link, read-only, shared with a group), the warnings, with the real `claude auth status` |
+| `test-usage.py` | `usage` | `usage.py`: readings from a stand-in usage endpoint and a stand-in gateway, Claude Code's own reading, the order of the accounts, refusals, open sessions |
+| `test-auto.sh` | `auto` | Automatic switching: `LEFT` in `list` and the prompt, `auto on`, `off` and `order`, the watch, the hook Claude Code runs, Desktop restarted without a question |
 | `test-chrome-host.py` | `chrome-host` | The Chrome host, with a stand-in extension, a stand-in claude.ai and a cookie jar |
 | `test-switch-chrome.py` | `switch-chrome` | claude-switch driving the Chrome host, end to end |
 | `test-worker.mjs` | `worker` | The worker of the extension, with a stand-in `chrome` API |
@@ -63,7 +65,7 @@ test holds. Every one of them must end `killed`.
 
 ```bash
 tests/mutants.py               # all of them, one at a time
-tests/mutants.py desktop       # the mutants of one file: switch, host, install, desktop, worker or completion
+tests/mutants.py desktop       # the mutants of one file: switch, host, install, desktop, worker, completion or usage
 tests/mutants.py key-twin-kept # one mutant, by name
 ```
 
@@ -98,6 +100,13 @@ real services and apps:
   refresh empties both tokens, and `/logout` revokes the refresh token.
 - Claude Code 2.1.326, against a stand-in gateway: a running session follows a switch between gateway keys
   and from a key to a claude.ai account once the entries are `""`, and a new session then uses the login.
+- Claude Code 2.1.329, in a container without network against a stand-in API: a `StopFailure` hook with
+  `asyncRewake` that exits 2 wakes the session a usage limit or an empty credit stopped, and when the hook
+  replaced `~/.claude/.credentials.json` first, the woken request carries the new login. With
+  `claude-switch auto on`, run before the session started or while it was open, a session that met the weekly
+  limit of its account carried on by itself on the next account.
+- Claude Code 2.1.329 keeps its last reading of the usage of the account it's on in
+  `cachedUsageUtilization` of `~/.claude.json`, and lists its running sessions in `~/.claude/sessions`.
 - claude.ai: a made-up session gets a 403 JSON answer with `account_session_invalid` from `/api/account`,
   saved sessions swap without a sign-in, and a page that sends half a swapped session gets it revoked.
 - claude.ai: the first Remote Control session of an account in Chrome or Desktop asks for a fresh sign-in,

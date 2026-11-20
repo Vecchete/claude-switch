@@ -167,6 +167,14 @@ with it reads another folder:
 claude-switch: ANTHROPIC_AUTH_TOKEN is set in this shell, a claude started from here doesn't follow the switch.
 ```
 
+## What a key has left
+
+`list` and the prompt show what a gateway key has left of its budget, read from the `/key/info` of its
+gateway with the key itself, LiteLLM's: what it spent, its budget and when the budget resets. Another
+gateway may not answer it, and an Anthropic API key has nothing to read, so `LEFT` shows `-` for them.
+[Automatic switching](auto.md) counts a key as having room while it's under its budget, and an Anthropic
+API key until a request says its credit is too low.
+
 ## Limits
 
 - claude.ai in Chrome and Claude Desktop don't use gateway keys, so a switch to a key leaves them on

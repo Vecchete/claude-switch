@@ -29,6 +29,10 @@ check "the command is claude-switch" '[ -x "$HOME/.local/bin/claude-switch" ]'
 check "the old name is gone" '[ ! -e "$HOME/.local/bin/claude-switch.sh" ]'
 check "the host is installed" '[ -x "$SHARE/chrome-host.py" ]'
 check "the Desktop helper is installed" '[ -x "$SHARE/desktop.py" ]'
+check "the usage helper is installed" '[ -x "$SHARE/usage.py" ] && cmp -s "$SHARE/usage.py" "$(dirname "$INSTALL")/share/usage.py"'
+check "the watch runs claude-switch" 'grep -q "/.local/bin/claude-switch watch" "$UNITS/claude-switch-watch.service"'
+check "the watch timer is installed" '[ -f "$UNITS/claude-switch-watch.timer" ]'
+check "the watch timer is left off while automatic switching is" '! grep -q "claude-switch-watch" "$T/systemctl.log"'
 check "the extension is installed" '[ -f "$SHARE/chrome-extension/manifest.json" ] && [ -f "$SHARE/chrome-extension/worker.js" ]'
 check "the completion is where bash-completion loads it" \
     '[ "$(stat -c %a "$COMPLETION")" = 644 ] && cmp -s "$COMPLETION" "$(dirname "$INSTALL")/share/completion.bash"'
@@ -58,6 +62,10 @@ printf 'the old script\n' > "$HOME/.local/bin/claude-switch.sh"
 check "check sees the old name" 'grep -qx "left over: $HOME/.local/bin/claude-switch.sh" "$T/out"'
 "$INSTALL" > "$T/out" 2>&1
 check "install puts everything back" '"$INSTALL" --check'
+mkdir -p "$HOME/.claude-accounts" && : > "$HOME/.claude-accounts/.auto"
+: > "$T/systemctl.log"
+"$INSTALL" > "$T/out" 2>&1
+check "with automatic switching on, the watch timer is started" 'grep -qx -- "--user enable --now claude-switch-watch.timer" "$T/systemctl.log"'
 
 XDG_DATA_HOME=$T/data "$INSTALL" > "$T/out" 2>&1
 check "the completion follows XDG_DATA_HOME" '[ -f "$T/data/bash-completion/completions/claude-switch" ]'

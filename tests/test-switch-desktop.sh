@@ -74,6 +74,12 @@ FAKE_DESKTOP_SWITCH=3 in_terminal n a@example.com
 check "open Desktop, no: left alone" '[ "$(calls)" = "switch acct-a|" ] && [ "$(live)" = a@example.com ]'
 rm -f "$T/desktop.log"
 
+FAKE_DESKTOP_SWITCH=3,0 in_terminal "" second
+check "open Desktop, Enter: Yes is the default" '[ "$(calls)" = "switch acct-b|quit|switch acct-b|start|" ] && grep -q "\[Y/n\]" "$T/out"'
+rm -f "$T/desktop.log"
+"$SCRIPT" a@example.com > "$T/out" 2>&1
+rm -f "$T/desktop.log"
+
 FAKE_DESKTOP_SWITCH=3 FAKE_DESKTOP_QUIT=1 in_terminal y second
 check "Desktop that doesn't close: not started twice, said" '[ "$(calls)" = "switch acct-b|quit|" ] && grep -q "didn.t close" "$T/out"'
 rm -f "$T/desktop.log"

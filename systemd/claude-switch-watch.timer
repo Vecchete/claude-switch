@@ -1,0 +1,9 @@
+[Unit]
+Description=Check every 5 minutes that the machine is on the best Claude account with room
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

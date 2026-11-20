@@ -81,5 +81,5 @@ so the copy in the store stops working with it.
 ## Names
 
 A name can't be empty, start with `-`, hold control characters, be a command of claude-switch (`list`,
-`login`, `key`, `rename`, `refresh`, `help`) or be only digits, since the prompt selects accounts by
-number. Two accounts can't share a name.
+`login`, `key`, `rename`, `refresh`, `auto`, `watch`, `hook`, `help`) or be only digits, since the prompt
+selects accounts by number. Two accounts can't share a name.

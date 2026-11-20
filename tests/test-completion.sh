@@ -45,7 +45,7 @@ account '$(touch PWNED)' x@example.com
 jq -n '{kind: "key", name: "gw", env: {ANTHROPIC_AUTH_TOKEN: "secret"}}' > "$STORE/key_gw.json"
 LAPTOP='my\ laptop' RUN='\$\(touch\ PWNED\)'
 ACCOUNTS=(lucas@example.com work lucas@example.org "$LAPTOP" other@example.net "$RUN" x@example.com gw)
-COMMANDS=(list login key rename refresh help)
+COMMANDS=(list login key rename refresh auto help)
 BEFORE=$(cd "$STORE" && ls -A && md5sum ./*.json)
 
 offers "claude-switch " > "$T/got"
@@ -63,6 +63,14 @@ offers "claude-switch rename wo" > "$T/got"
 check "rename: an account" 'expect work | diff - "$T/got"'
 offers "claude-switch refresh " > "$T/got"
 check "refresh: --force" 'expect --force | diff - "$T/got"'
+offers "claude-switch auto " > "$T/got"
+check "auto: on, off and order" 'expect on off order | diff - "$T/got"'
+offers "claude-switch auto on " > "$T/got"
+check "auto on: nothing more" '[ ! -s "$T/got" ]'
+offers "claude-switch auto order " > "$T/got"
+check "auto order: the kinds of account" 'expect key max ultra | diff - "$T/got"'
+offers "claude-switch auto order max u" > "$T/got"
+check "auto order: the next kind" 'expect ultra | diff - "$T/got"'
 offers "claude-switch key " > "$T/got"
 check "key: import, add, renew and remove" 'expect add import remove renew | diff - "$T/got"'
 offers "claude-switch key remove " > "$T/got"

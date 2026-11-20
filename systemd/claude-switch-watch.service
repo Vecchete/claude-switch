@@ -1,0 +1,11 @@
+[Unit]
+Description=Keep the machine on the best Claude account with room while a Claude Code session is open
+Documentation=https://github.com/Vecchete/claude-switch
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -lc '%h/.local/bin/claude-switch watch'
+TimeoutStartSec=300
+Nice=10
+# A stop reaches the script only: a switch it is making finishes.
+KillMode=mixed

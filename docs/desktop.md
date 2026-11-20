@@ -36,11 +36,13 @@ tokens, disconnects the connectors and resets the tool permissions.
    session nobody can name is never saved or replaced.
 2. When Desktop is already on that account, there is nothing to do, also with Desktop open.
 3. When Desktop is open, it holds its cookies and writes `config.json` as it quits, so nothing can change
-   under it. In a terminal, the switch asks whether to restart Desktop, and takes no for an answer after
-   60 seconds. Yes closes Desktop the way quitting it does, switches it and starts it again, without the
-   environment of the calling shell. Code and Cowork tasks running in Desktop stop. No, or no terminal,
-   leaves Desktop on its account, and running `claude-switch NAME` again once Desktop is closed brings it
-   along.
+   under it. In a terminal, the switch asks whether to restart Desktop. Yes is the default: Enter, or no
+   answer within 60 seconds, restarts it. An [automatic switch](auto.md) restarts it without asking. A
+   restart closes Desktop the way quitting it does, switches it and starts it again, without the
+   environment of the calling shell, and in a systemd scope of its own, so the timer that made the switch
+   doesn't take it along when it ends. Code and Cowork tasks running in Desktop stop. No, or a switch
+   from a script without a terminal, leaves Desktop on its account, and running `claude-switch NAME` again
+   once Desktop is closed brings it along.
 4. The open session is saved in `~/.claude-accounts/.desktop/<account>.json`, mode 600.
 5. The saved session of the target goes in, the cookies first and `config.json` after, with TERM, INT
    and HUP held between the two. When there is no saved session for that account yet, Desktop is left
@@ -61,7 +63,7 @@ is left over, which Desktop replays at its next start. Starting and quitting Des
 | `desktop.py status` | Prints what Desktop is on, as JSON |
 | `desktop.py switch ACCOUNT` | Saves the open sign-in under its account and puts back the one of `ACCOUNT` |
 | `desktop.py quit [SECONDS]` | Closes Desktop and waits until it's gone, 20 seconds at most by default |
-| `desktop.py start` | Starts Desktop, without the environment of the calling shell |
+| `desktop.py start` | Starts Desktop, without the environment of the calling shell, in a systemd scope of its own when the user's systemd runs |
 
 ## Limits
 

@@ -23,6 +23,7 @@ it. [Compatibility](#compatibility) lists the versions it was tested with.
 - [Usage](#usage)
 - [What a switch changes](#what-a-switch-changes)
 - [Gateway keys](#gateway-keys)
+- [Automatic switching](#automatic-switching)
 - [Keeping the other accounts signed in](#keeping-the-other-accounts-signed-in)
 - [Your data](#your-data)
 - [Limitations](#limitations)
@@ -52,6 +53,10 @@ sign-in, and everything else stays shared.
 - The accounts that are not active stay signed in. A systemd user timer refreshes their logins in the
   background, and claude-switch reminds you a week before a sign-in ends.
 - Keys of LLM gateways such as LiteLLM, and Anthropic API keys, are accounts too.
+- `list` and the prompt show what each account has left: of its week for a subscription, of its budget for a
+  gateway key.
+- Automatic switching, once you turn it on: the machine stays on the best account with room, and a session
+  that meets a limit moves to the next account and carries on by itself.
 - An interactive prompt, `list`, `rename`, and Tab completion in bash.
 - No token is ever printed or put on a command line. The logins stay in `~/.claude-accounts`, readable
   only by you.
@@ -80,15 +85,15 @@ cd claude-switch
 ./install.sh
 ```
 
-`install.sh` copies the files to where they run from and enables the refresh timer. It needs no root
-and changes nothing else:
+`install.sh` copies the files to where they run from and enables the refresh timer, and the watch timer
+while [automatic switching](#automatic-switching) is on. It needs no root and changes nothing else:
 
 | File | Installed to |
 |---|---|
 | `bin/claude-switch` | `~/.local/bin/claude-switch` |
-| `share/chrome-host.py`, `share/desktop.py`, `share/chrome-extension/` | `~/.local/share/claude-switch/` |
+| `share/chrome-host.py`, `share/desktop.py`, `share/usage.py`, `share/chrome-extension/` | `~/.local/share/claude-switch/` |
 | `share/completion.bash` | `~/.local/share/bash-completion/completions/claude-switch` |
-| `systemd/claude-switch-refresh.service` and `.timer` | `~/.config/systemd/user/` |
+| `systemd/claude-switch-refresh.service` and `.timer`, `systemd/claude-switch-watch.service` and `.timer` | `~/.config/systemd/user/` |
 | The manifest of the Chrome native messaging host | `NativeMessagingHosts/` in `~/.config/google-chrome` and `~/.config/google-chrome-beta`, when they exist |
 
 `~/.local/bin` must be in your `PATH`. Debian and Ubuntu add it at login once the folder exists, so log
@@ -144,13 +149,14 @@ Nothing more to do. When Claude Desktop is installed, it follows the switch.
 
 ```text
 $ claude-switch list
-  ACCOUNT                      EMAIL                                PLAN   UNTIL
-* work                         you@company.example                  team   12/12/2026
-  personal                     you@example.com                      max    05/12/2026
-  team-gw                      https://llm.company.example          key    -
+  ACCOUNT                      EMAIL                                PLAN   UNTIL       LEFT
+* work                         you@company.example                  team   12/12/2026  49% until Fri 22:00
+  personal                     you@example.com                      ultra  05/12/2026  none until Tue 09:00
+  team-gw                      https://llm.company.example          key    -           $21.80 until 01/12
 ```
 
-`UNTIL` is the day the sign-in of the account ends.
+`UNTIL` is the day the sign-in of the account ends. `LEFT` is what the account has left: of its week, until
+the week resets, or of the budget of a gateway key. See [docs/auto.md](docs/auto.md#what-list-shows).
 
 ## Usage
 
@@ -158,7 +164,7 @@ $ claude-switch list
 |---|---|
 | `claude-switch` | Opens a numbered list of the accounts: type a number to switch, `a` to add an account, a subscription or a key, `r` to rename one, `q` to quit. |
 | `claude-switch NAME` | Switches to the account `NAME`, a name or an email. |
-| `claude-switch list` | Prints the accounts. `*` marks the active one. |
+| `claude-switch list` | Prints the accounts and what each has left. `*` marks the active one. |
 | `claude-switch login [ACCOUNT] [OPTIONS]` | Signs in an account and saves it, without switching. With `ACCOUNT`, renews the sign-in of that account. `OPTIONS` go to `claude auth login`. |
 | `claude-switch rename NAME NEW_NAME` | Renames an account. |
 | `claude-switch key import NAME` | Saves the gateway key in `~/.claude/settings.json` as the account `NAME`. |
@@ -166,6 +172,8 @@ $ claude-switch list
 | `claude-switch key renew NAME` | Gives a gateway key a new token. |
 | `claude-switch key remove NAME` | Forgets a gateway key. |
 | `claude-switch refresh [--force]` | Refreshes the logins of the accounts that are not active. The timer runs it for you. |
+| `claude-switch auto [on\|off]` | Turns automatic switching on or off, or says how it stands. |
+| `claude-switch auto order [KIND...]` | Says which kind of account comes first, `ultra`, `max` or `key`, or prints the order. |
 | `claude-switch help` | Prints the help, as `-h` and `--help` do. |
 
 Tab completes the commands and the account names and emails in bash, once bash-completion is installed.
@@ -182,8 +190,8 @@ Tab completes the commands and the account names and emails in bash, once bash-c
 - **claude.ai in Chrome**: the claude.ai session cookies, swapped by the companion extension. The
   claude.ai tabs reload on the new account. See [docs/chrome.md](docs/chrome.md).
 - **Claude Desktop**: its claude.ai session and the tokens of its Code tab. Desktop has to be closed for
-  that, so when it's open, claude-switch asks whether to restart it. See
-  [docs/desktop.md](docs/desktop.md).
+  that, so when it's open, claude-switch asks whether to restart it, Yes by default, and an automatic
+  switch restarts it without asking. See [docs/desktop.md](docs/desktop.md).
 - **A gateway key**: its entries in the `env` of `~/.claude/settings.json`. See
   [Gateway keys](#gateway-keys).
 
@@ -208,6 +216,27 @@ claude-switch personal                        # back to a claude.ai account
 A switch to a key puts its entries in `settings.json`, and a switch to a claude.ai account empties them
 again. Running sessions follow both ways. claude.ai in Chrome and Claude Desktop stay on their account.
 [docs/gateway-keys.md](docs/gateway-keys.md) explains the rest.
+
+## Automatic switching
+
+```bash
+claude-switch auto on
+```
+
+From then on, the machine stays on the best account that has room left:
+
+- Only the week counts. By default an Ultra subscription comes first, then a key, then Max and the other
+  plans, which have a 5-hour limit. `claude-switch auto order max` puts Max first on this machine, for
+  instance. Within a kind, the allowance that resets first goes first.
+- When a session meets a limit, a hook claude-switch adds to `~/.claude/settings.json` moves the machine to
+  the next account and wakes the session, which sends its request again on the new account.
+- Every 5 minutes while a Claude Code session is open, a timer checks the accounts and goes back to a better
+  one once its limit resets.
+- A switch you type stays while its account has room.
+- An automatic switch between two claude.ai accounts restarts Claude Desktop without asking.
+
+`claude-switch auto off` takes the hook and the timer out again. [docs/auto.md](docs/auto.md) has the
+details.
 
 ## Keeping the other accounts signed in
 
@@ -236,23 +265,33 @@ mode 600):
 | `key_<name>.json` | A gateway key account |
 | `.web/<account>.json` | The claude.ai session cookies saved for Chrome |
 | `.desktop/<account>.json` | The Claude Desktop sign-in, still encrypted by Desktop |
+| `.usage/<account>.json` | What the account had left when it was last read |
 
 The folder also holds small state files: the lock, the notifications already shown, the socket of the
-Chrome host and a switch that waits for Chrome. The account files hold logins, so keep the folder out of
-backups you share and out of any repository.
+Chrome host, a switch that waits for Chrome, and what automatic switching keeps, see
+[docs/auto.md](docs/auto.md#files). The account files hold logins, so keep the folder out of backups you
+share and out of any repository.
 
-The `claude-switch` command talks to no server itself. `claude` signs you in and renews the logins, and
-the Chrome host only asks `https://claude.ai/api/account` which account a session belongs to, with that
-session's own cookies. [SECURITY.md](SECURITY.md) has the details and says how to report a problem.
+`claude` signs you in and renews the logins. claude-switch itself asks a server only for what an account
+has left: `https://api.anthropic.com/api/oauth/usage` with the login of that account, and the `/key/info`
+of a gateway with that gateway's own key. The Chrome host only asks `https://claude.ai/api/account` which
+account a session belongs to, with that session's own cookies. [SECURITY.md](SECURITY.md) has the details
+and says how to report a problem.
 
 ## Limitations
 
 - Only Google Chrome and Chrome Beta get the native host manifest. Chromium, Brave, Edge and Firefox
   don't follow the switch, and only one Chrome profile at a time does.
 - The Claude in Chrome extension keeps a login of its own, which claude-switch can't switch.
-- Claude Desktop must be closed for a switch, so an open Desktop is restarted when you say yes. The
-  first Remote Control session of an account in Chrome or in Desktop asks for one sign-in.
+- Claude Desktop must be closed for a switch, so an open Desktop is restarted unless you say no, and on
+  an automatic switch without asking. The first Remote Control session of an account in Chrome or in
+  Desktop asks for one sign-in.
 - A switch disconnects Remote Control. `/remote-control` in a session registers it with the new account.
+- What a subscription has left comes from an endpoint Anthropic doesn't document. When it changes, `list`
+  shows `-` and automatic switching moves on only when a session meets a limit.
+- Automatic switching wakes a session through a `StopFailure` hook with `asyncRewake`, checked with Claude
+  Code 2.1.329. Its documentation says it ignores the exit status of that hook, so a later version could
+  stop waking sessions.
 - An update of Claude Code, claude.ai or Claude Desktop can change where the sign-in is kept. When Claude
   Code adds a login field claude-switch doesn't know, every switch says it doesn't move it.
 
@@ -261,7 +300,7 @@ session's own cookies. [SECURITY.md](SECURITY.md) has the details and says how t
 | Part | Tested with |
 |---|---|
 | Linux | Ubuntu 24.04 and 22.04 |
-| Claude Code | 2.1.314 and 2.1.326 |
+| Claude Code | 2.1.314, 2.1.326 and 2.1.329 |
 | jq | 1.6 and 1.7 |
 | Chrome | Chrome Beta 155 |
 | Claude Desktop | 4.4212.0, the Linux beta from Anthropic's apt repository |
@@ -272,8 +311,10 @@ A newer version may work as well. When it doesn't, please open an issue with the
 ## Uninstall
 
 ```bash
+claude-switch auto off
 systemctl --user disable --now claude-switch-refresh.timer
 rm -f ~/.config/systemd/user/claude-switch-refresh.service ~/.config/systemd/user/claude-switch-refresh.timer
+rm -f ~/.config/systemd/user/claude-switch-watch.service ~/.config/systemd/user/claude-switch-watch.timer
 systemctl --user daemon-reload
 rm -f ~/.local/bin/claude-switch ~/.local/share/bash-completion/completions/claude-switch
 rm -f ~/.config/google-chrome*/NativeMessagingHosts/com.lucasvecchete.claude_switch.json
@@ -288,6 +329,7 @@ them anymore.
 
 - [How a switch works](docs/switch.md)
 - [Gateway keys](docs/gateway-keys.md)
+- [Automatic switching](docs/auto.md)
 - [Keeping the other accounts signed in](docs/refresh.md)
 - [claude.ai in Chrome](docs/chrome.md)
 - [Claude Desktop](docs/desktop.md)

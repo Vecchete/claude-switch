@@ -29,9 +29,14 @@ Only the latest commit of `main` gets fixes. There are no releases yet.
 - It never prints a token, and never puts one on a command line, where the shell history and the process
   list would keep it. A gateway token is asked without echo or read from the standard input, and tokens
   are compared inside jq.
-- It talks to no server itself. `claude` signs in and refreshes the logins. The Chrome host sends the
-  claude.ai cookies of the browser to `https://claude.ai/api/account` only, to learn which account a
+- `claude` signs in and refreshes the logins. claude-switch itself asks for what an account has left
+  only: the access token of a claude.ai account goes to `https://api.anthropic.com/api/oauth/usage`, never
+  to `ANTHROPIC_BASE_URL`, and a gateway key to the `/key/info` of its own gateway. The Chrome host sends
+  the claude.ai cookies of the browser to `https://claude.ai/api/account` only, to learn which account a
   session belongs to.
+- With automatic switching on, `~/.claude/settings.json` holds a hook that runs `claude-switch hook` when
+  a Claude Code turn ends on an API error. What the hook prints goes to Claude, so it prints one sentence
+  that names accounts and never a token, and says the rest in `~/.claude-accounts/.auto.log`.
 - The Chrome extension sees claude.ai only, and talks to the host through the native messaging of Chrome.
   claude-switch reaches the host through a Unix socket in `~/.claude-accounts`.
 - The Claude Desktop sign-in is saved as Desktop encrypted it, and never decrypted.

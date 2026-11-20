@@ -73,11 +73,13 @@ changed() {
 place "$ROOT/bin/claude-switch" "$BIN/claude-switch" 755
 place "$ROOT/share/chrome-host.py" "$SHARE/chrome-host.py" 755
 place "$ROOT/share/desktop.py" "$SHARE/desktop.py" 755
+place "$ROOT/share/usage.py" "$SHARE/usage.py" 755
 place "$ROOT/share/completion.bash" "$COMPLETIONS/claude-switch" 644
 for file in manifest.json worker.js; do
     place "$ROOT/share/chrome-extension/$file" "$SHARE/chrome-extension/$file" 644
 done
-for unit in claude-switch-refresh.service claude-switch-refresh.timer; do
+for unit in claude-switch-refresh.service claude-switch-refresh.timer claude-switch-watch.service \
+    claude-switch-watch.timer; do
     place "$ROOT/systemd/$unit" "$UNITS/$unit" 644
 done
 
@@ -105,6 +107,11 @@ if changed "$UNITS/*"; then
 fi
 systemctl --user enable --now claude-switch-refresh.timer >/dev/null 2>&1 \
     || printf 'Could not enable claude-switch-refresh.timer: systemctl --user enable --now claude-switch-refresh.timer\n'
+# The watch timer runs while automatic switching is on: claude-switch auto on and off start and stop it.
+if [ -f "$STORE/.auto" ]; then
+    systemctl --user enable --now claude-switch-watch.timer >/dev/null 2>&1 \
+        || printf 'Could not enable claude-switch-watch.timer: systemctl --user enable --now claude-switch-watch.timer\n'
+fi
 
 # The timer runs the new name from here on, so the old one can go.
 if [ -e "$OLD" ]; then

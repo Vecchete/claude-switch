@@ -340,6 +340,24 @@ with tempfile.TemporaryDirectory(prefix="claude-switch-desktop.") as folder:
     check("start: Desktop is started", result.returncode == 0 and "HOME=" in started)
     check("start: nothing of the calling session goes with it",
           "CLAUDECODE" not in started and "ANTHROPIC_API_KEY" not in started and "CLAUDE_CODE_OAUTH_TOKEN" not in started)
+    check("start: without the user's systemd, Desktop is started as it is", not (m.home / "scoped").exists())
+    # A service started by a timer takes what it started along when it ends: Desktop gets a scope of its own.
+    (m.home / "started").unlink()
+    runtime = root / "runtime"
+    (runtime / "systemd").mkdir(parents=True)
+    (runtime / "systemd" / "private").write_text("")
+    (m.bin / "systemd-run").write_text('#!/bin/sh\nprintf "%s " "$@" > "$HOME/scoped"\nwhile [ "$1" != -- ]; do shift; '
+                                       'done\nshift\nexec "$@"\n')
+    (m.bin / "systemd-run").chmod(0o755)
+    result = m.run("start", XDG_RUNTIME_DIR=str(runtime))
+    for _ in range(50):
+        if (m.home / "started").exists():
+            break
+        time.sleep(0.1)
+    scoped = (m.home / "scoped").read_text() if (m.home / "scoped").exists() else ""
+    check("start: in a scope of its own", result.returncode == 0 and scoped.startswith("--user --scope ")
+          and scoped.rstrip().endswith("-- claude-desktop"))
+    check("start: and started", (m.home / "started").exists())
 
     # No Desktop here: nothing to do.
     empty = root / "empty"
