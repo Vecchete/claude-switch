@@ -245,6 +245,18 @@ try:
     check("back: B's trusted device saved with B", names(saved(store, ACCOUNT_B)["cookies"]).get(DEVICE) == "trusted-b")
     check("back: A's trusted device put back", names(jar).get(DEVICE) == "trusted-a")
 
+    # A sign-in that added an account left claude.ai on another one: --back puts back the live account when its
+    # session is saved, and leaves Chrome as it is when none is, rather than signed out.
+    jar[:] = [c for c in jar if c["name"] not in SESSION and c["name"] != DEVICE] + saved(store, ACCOUNT_B)["cookies"]
+    result = client(home, "--back", ACCOUNT_A)
+    check("--back after a sign-in: claude.ai on the live account again", result.returncode == 0
+          and "switched to a@example.com" in result.stdout and names(jar).get("sessionKey") == "session-a")
+    reloads = extension.reloads
+    result = client(home, "--back", ACCOUNT_C)
+    check("--back with no session saved: Chrome left as it is", result.returncode == 0
+          and "no session saved for" in result.stdout and "it stays on the account open there" in result.stdout
+          and names(jar).get("sessionKey") == "session-a" and extension.reloads == reloads)
+
     # claude.ai down: a session saved before is still recognized.
     ClaudeAi.up = False
     result = client(home, "--switch", ACCOUNT_B)

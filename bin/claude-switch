@@ -133,18 +133,21 @@ Usage:
   claude-switch                          Prompt to switch, add or rename.
   claude-switch NAME                     Switch the whole machine to NAME, a name or an email.
   claude-switch list                     Print the accounts and what each has left. * marks the active one.
-  claude-switch login [ACCOUNT] [OPTIONS]
-                                         Sign in an account and keep it here. It doesn't switch.
-                                         With ACCOUNT, a name or an email already here, it renews
-                                         that one: claude.ai in Chrome goes to it first and the sign-in
-                                         page asks for its email. OPTIONS go to claude auth login.
+  claude-switch login [ACCOUNT] [--switch] [OPTIONS]
+                                         Sign in an account and keep it here. The machine stays on its
+                                         account, and claude.ai in Chrome goes back to it when it can,
+                                         unless --switch puts the machine on the new one. With ACCOUNT,
+                                         a name or an email already here, it renews that one: claude.ai
+                                         in Chrome goes to it first and the sign-in page asks for its
+                                         email. OPTIONS go to claude auth login.
   claude-switch key import NAME          Keep the gateway key now in ~/.claude/settings.json as the
                                          account NAME: its token, URL and model names.
-  claude-switch key add NAME [--like KEY] [--api-key] [--base-url URL] [--env VAR=VALUE]...
-                                         Keep a gateway key as the account NAME. The token is asked
-                                         without echo, or read from the standard input. --like takes
-                                         the URL and model names of KEY, --api-key sends the token as
-                                         an Anthropic API key, x-api-key, rather than a bearer token.
+  claude-switch key add NAME [--switch] [--like KEY] [--api-key] [--base-url URL] [--env VAR=VALUE]...
+                                         Keep a gateway key as the account NAME, and switch to it with
+                                         --switch. The token is asked without echo, or read from the
+                                         standard input. --like takes the URL and model names of KEY,
+                                         --api-key sends the token as an Anthropic API key, x-api-key,
+                                         rather than a bearer token.
   claude-switch key renew NAME           Give the gateway key NAME a new token, asked the same way.
   claude-switch key remove NAME          Forget the gateway key NAME, and take it out of
                                          ~/.claude/settings.json when it is active.
@@ -175,9 +178,14 @@ A sign-in lasts about 28 days, and only a new sign-in moves its end. From 7 days
 prompt and a switch say when it ends, with the claude-switch login that renews it.
 
 The best account with room is an Ultra subscription first, then a key, then another plan, unless
-claude-switch auto order says otherwise: only the weekly limit counts. An account that stops a session
-waits until its limit resets. A switch typed by hand stays while automatic switching is on, until that
-account runs out.
+claude-switch auto order says otherwise: only the weekly limit counts. Between accounts of the same
+kind, the one the machine is on stays until it runs out. An account that stops a session waits until
+its limit resets. A switch typed by hand stays while automatic switching is on, until that account
+runs out.
+
+Adding an account doesn't switch to it, unless with --switch. With automatic switching on, the new
+account ranks with the others: added without --switch, the machine goes to it at once when it comes
+first, and added with --switch, the next check moves the machine on when another account comes first.
 
 Don't use /logout on an account you want to keep: it revokes the login saved here too.
 To forget an account, remove its file in ~/.claude-accounts, or a gateway key with claude-switch key
@@ -486,7 +494,7 @@ note_switch() {
 }
 
 key_usage() {
-    die "Usage: claude-switch key import NAME, key add NAME [--like KEY] [--api-key] [--base-url URL]" \
+    die "Usage: claude-switch key import NAME, key add NAME [--switch] [--like KEY] [--api-key] [--base-url URL]" \
         "[--env VAR=VALUE]..., key renew NAME or key remove NAME"
 }
 
@@ -534,7 +542,7 @@ store_key() {
 # Keeps a gateway key as the account NAME: the one in settings.json (import), or a token asked without echo
 # or read from the standard input (add). ACTION NAME [OPTIONS]
 key_new() {
-    local action=$1 name=$2 file problem held like="" like_name="" base="" api="" pair var
+    local action=$1 name=$2 file problem held like="" like_name="" base="" api="" switch="" pair var
     local extra=()
     shift 2
     problem=$(name_problem "$name")
@@ -556,6 +564,11 @@ key_new() {
             while [ $# -gt 0 ]; do
                 if [ "$1" = --api-key ]; then
                     api=yes
+                    shift
+                    continue
+                fi
+                if [ "$1" = --switch ]; then
+                    switch=yes
                     shift
                     continue
                 fi
@@ -604,7 +617,7 @@ key_new() {
         *) key_usage ;;
     esac
     store_key "$file"
-    printf 'Kept the gateway key %s. Switch to it with: claude-switch %q\n' "$name" "$name"
+    after_adding "$file" "$switch" "Kept the gateway key $name."
 }
 
 # A new token for the gateway key NAME, in the variable its token is in. Its URL and model names stay, and
@@ -775,6 +788,18 @@ web_back() {
     [ -z "$live" ] || web_switch "$live"
 }
 
+# After a sign-in that added an account and didn't switch: claude.ai in Chrome back on the account Claude Code is
+# on, since the browser may have signed in the new one there. Without a session saved for that account the
+# companion leaves Chrome as it is, because putting back none would sign Chrome out.
+web_restore() {
+    local live account
+    [ -x "$CHROME_HOST" ] || return 0
+    live=$(live_file) || return 0
+    account=$(jq -r '.oauthAccount.accountUuid // empty' "$live")
+    [ -n "$account" ] || return 0
+    "$CHROME_HOST" --back "$account" 9>&- || warn "Put claude.ai in Chrome back on its account by hand this time."
+}
+
 # Claude Desktop follows the switch, when it is installed. It must be closed for that, so an open one is
 # restarted: on a switch claude-switch makes by itself, and on one typed in a terminal unless it says no.
 # FILE
@@ -899,10 +924,20 @@ switch_to() {
     desktop_switch "$file"
 }
 
-# Signs in beside the store and not in ~/.claude, so the live account changes only on a switch.
-# No session ever runs from this folder, it's gone when this ends.
+# Signs in beside the store and not in ~/.claude, so the live account changes only on a switch, the one --switch
+# asks for once the account is kept. No session ever runs from this folder, it's gone when this ends.
 cmd_login() {
-    local file known="" answer problem wanted="" wanted_email=""
+    local file known="" answer problem wanted="" wanted_email="" switch="" argument
+    local options=()
+    # --switch is for claude-switch: claude auth login never sees it.
+    for argument in "$@"; do
+        if [ "$argument" = --switch ]; then
+            switch=yes
+        else
+            options+=("$argument")
+        fi
+    done
+    set -- ${options[@]+"${options[@]}"}
     if [ $# -ge 1 ] && [ "${1#-}" = "$1" ]; then
         wanted=$(require_account "$1") || exit 1
         ! is_key "$wanted" || die "$1 is a gateway key, it has no sign-in. Give it a new token with:" \
@@ -933,14 +968,22 @@ cmd_login() {
     if [ -n "$wanted" ] && [ "$file" != "$wanted" ]; then
         warn "The browser signed in $EMAIL, not $wanted_email. $EMAIL is kept, $wanted_email is unchanged."
     fi
-    [ -z "$WEB_AWAY" ] || web_back
+    if [ -n "$WEB_AWAY" ]; then
+        web_back
+    elif [ -z "$known" ] && [ -z "$switch" ]; then
+        web_restore
+    fi
     if [ -n "$known" ]; then
         if [ "$file" = "$(live_file || true)" ]; then
             lock_live
             apply_account "$file"
             release_locks
         fi
-        printf '%s was already here, its login is renewed.\n' "$LABEL"
+        if [ -n "$switch" ]; then
+            after_adding "$file" yes "$LABEL was already here, its login is renewed."
+        else
+            printf '%s was already here, its login is renewed.\n' "$LABEL"
+        fi
         return 0
     fi
     unlock_store
@@ -959,7 +1002,30 @@ cmd_login() {
         done
         read_account "$file"
     fi
-    printf 'Added %s. Switch to it with: claude-switch %q\n' "$LABEL" "$LABEL"
+    after_adding "$file" "$switch" "Added $LABEL."
+}
+
+# DONE says the account FILE was kept. With SWITCH the machine goes to it now, and nothing holds it there: it's no
+# choice by hand, so automatic switching moves the machine on at its next check when another account comes first.
+# Without, the machine stays, and automatic switching, when it is on, ranks the new account with the others at
+# once: the machine goes to it when it comes first. FILE SWITCH DONE
+after_adding() {
+    if [ -n "$2" ]; then
+        printf '%s\n' "$3"
+        lock_store
+        switch_to "$1"
+        if auto_on; then
+            rm -f "$HOLD"
+            printf 'Automatic switching is on: at its next check it goes to the best account with room, which may be another one.\n'
+        fi
+    elif auto_on; then
+        printf '%s Automatic switching ranks it with the others:\n' "$3"
+        lock_store
+        route_and_say
+    else
+        read_account "$1"
+        printf '%s Switch to it with: claude-switch %q\n' "$3" "$LABEL"
+    fi
 }
 
 rename_account() {
@@ -1299,7 +1365,6 @@ set_auto_order() {
 
 # Turns automatic switching on or off, says how it stands, or sets the order. [on|off|order [KIND...]]
 cmd_auto() {
-    local active
     [ "${1:-}" = order ] || [ $# -le 1 ] || die "Usage: claude-switch auto [on|off|order [KIND...]]"
     case ${1:-} in
         "") auto_status ;;
@@ -1326,12 +1391,7 @@ cmd_auto() {
                     "systemctl --user enable --now $WATCH_TIMER"
             fi
             printf 'Automatic switching is on: the machine goes to the best account with room, every 5 minutes while a session is open and as soon as a session meets a limit.\n'
-            if ! route; then
-                printf 'No account has room now.\n'
-            elif [ -z "$ROUTED_TO" ] && active=$(active_file); then
-                read_account "$active"
-                printf 'It stays on %s, the best account with room.\n' "$LABEL"
-            fi
+            route_and_say
             ;;
         off)
             ! hook_in_settings || set_auto_hook off
@@ -1344,7 +1404,7 @@ cmd_auto() {
 }
 
 auto_status() {
-    local best held
+    local best held active
     if ! auto_on; then
         printf 'Automatic switching is off. Turn it on with: claude-switch auto on\n'
         return 0
@@ -1358,7 +1418,9 @@ auto_status() {
         printf '%s was chosen by hand, it stays until it runs out.\n' "$LABEL"
     fi
     "$USAGE_HELPER" read --timeout 5 "$STORE"/*.json 2>/dev/null || true
-    if best=$("$USAGE_HELPER" best --order "$(auto_order | tr ' ' ,)" "$STORE"/*.json 2>/dev/null); then
+    active=$(active_file || true)
+    if best=$("$USAGE_HELPER" best ${active:+--active "$active"} --order "$(auto_order | tr ' ' ,)" "$STORE"/*.json \
+        2>/dev/null); then
         read_account "$best"
         printf 'The best account with room now is %s.\n' "$LABEL"
     else
@@ -1385,7 +1447,8 @@ route() {
         hold=$STORE/$(head -n 1 "$HOLD")
         [ -f "$hold" ] || hold=""
     fi
-    if ! best=$("$USAGE_HELPER" best ${hold:+--hold "$hold"} --order "$(auto_order | tr ' ' ,)" "$STORE"/*.json); then
+    if ! best=$("$USAGE_HELPER" best ${hold:+--hold "$hold"} ${active:+--active "$active"} \
+        --order "$(auto_order | tr ' ' ,)" "$STORE"/*.json); then
         nothing_left
         return 1
     fi
@@ -1408,6 +1471,21 @@ route() {
     AUTO=""
     printf 'Switched to %s: %s.\n' "$ROUTED_TO" "$ROUTED_WHY"
     notify "Switched to $ROUTED_TO" "$ROUTED_WHY.${DESKTOP_KEPT:+ Claude Desktop stays on its account: close it and run claude-switch $(printf '%q' "$ROUTED_TO") to bring it along.}"
+}
+
+# route, and what came of it when the machine stays.
+route_and_say() {
+    local active
+    if ! route; then
+        printf 'No account has room now.\n'
+    elif [ -z "$ROUTED_TO" ] && active=$(active_file); then
+        read_account "$active"
+        if [ -f "$HOLD" ] && [ "$STORE/$(head -n 1 "$HOLD")" = "$active" ]; then
+            printf 'It stays on %s, chosen by hand, until it runs out.\n' "$LABEL"
+        else
+            printf 'It stays on %s, the best account with room.\n' "$LABEL"
+        fi
+    fi
 }
 
 # The log keeps its last lines once it passes 1 MB. Only before a run opens it: a run that writes to it would go
@@ -1545,14 +1623,16 @@ prompt_rename() {
     (lock_store && rename_account "${files[row - 1]}" "$new") || true
 }
 
-# Asks whether the new account is a subscription or a key, then signs it in or keeps the key. Each runs as a
-# claude-switch of its own, so a refusal ends that run and not the prompt.
+# Asks whether the new account is a subscription or a key, and whether the machine goes to it once it's in, then
+# signs it in or keeps the key. Each runs as a claude-switch of its own, so a refusal ends that run and not the
+# prompt.
 prompt_add() {
-    local kind name url problem
+    local kind name url problem answer
+    local command=()
     printf '\n   s) A subscription, signed in with the browser\n   k) An API key or a gateway key\n\n'
     IFS= read -r -p 'Which kind of account? ' kind || return 0
     case $kind in
-        s|S) bash "$0" login || true ;;
+        s|S) command=(login) ;;
         k|K)
             read -r -p 'Name of the key: ' name || return 0
             name=$(trim "$name")
@@ -1565,16 +1645,25 @@ prompt_add() {
             read -r -p 'Gateway URL (Enter for the Anthropic API): ' url || return 0
             url=$(trim "$url")
             if [ -z "$url" ]; then
-                bash "$0" key add "$name" --api-key || true
+                command=(key add "$name" --api-key)
             elif [[ ${url,,} == http://* || ${url,,} == https://* ]]; then
-                bash "$0" key add "$name" --base-url "$url" || true
+                command=(key add "$name" --base-url "$url")
             else
                 printf 'A gateway URL starts with https:// or http://.\n'
+                return 0
             fi
             ;;
-        "") ;;
-        *) printf 'Type s or k.\n' ;;
+        "") return 0 ;;
+        *)
+            printf 'Type s or k.\n'
+            return 0
+            ;;
     esac
+    read -r -p "Switch to it once it's added? [y/N] " answer || return 0
+    case $(trim "$answer") in
+        y|Y|yes|Yes|YES) command+=(--switch) ;;
+    esac
+    bash "$0" "${command[@]}" || true
 }
 
 cmd_prompt() {

@@ -137,7 +137,8 @@ Nothing more to do. When Claude Desktop is installed, it follows the switch.
    short name, or press Enter to keep its email as the name. When the browser offers an account that is
    already saved, change accounts on that page or open the link in a private window. In the prompt, `a`
    asks for the kind of account first: `s` signs in a subscription, and `k` keeps an API key or a gateway
-   key. It asks for a name, the URL of the gateway (Enter for the Anthropic API) and then the key.
+   key. For a key it asks for a name and the URL of the gateway (Enter for the Anthropic API). Then it asks
+   whether to switch to the new account once it's added, no by default, and signs it in or asks for the key.
 
 3. Switch:
 
@@ -165,10 +166,10 @@ the week resets, or of the budget of a gateway key. See [docs/auto.md](docs/auto
 | `claude-switch` | Opens a numbered list of the accounts: type a number to switch, `a` to add an account, a subscription or a key, `r` to rename one, `q` to quit. |
 | `claude-switch NAME` | Switches to the account `NAME`, a name or an email. |
 | `claude-switch list` | Prints the accounts and what each has left. `*` marks the active one. |
-| `claude-switch login [ACCOUNT] [OPTIONS]` | Signs in an account and saves it, without switching. With `ACCOUNT`, renews the sign-in of that account. `OPTIONS` go to `claude auth login`. |
+| `claude-switch login [ACCOUNT] [--switch] [OPTIONS]` | Signs in an account and saves it, without switching unless with `--switch`. With `ACCOUNT`, renews the sign-in of that account. `OPTIONS` go to `claude auth login`. |
 | `claude-switch rename NAME NEW_NAME` | Renames an account. |
 | `claude-switch key import NAME` | Saves the gateway key in `~/.claude/settings.json` as the account `NAME`. |
-| `claude-switch key add NAME [OPTIONS]` | Saves another gateway key. Its token is asked without echo, or read from the standard input. |
+| `claude-switch key add NAME [--switch] [OPTIONS]` | Saves another gateway key, and switches to it with `--switch`. Its token is asked without echo, or read from the standard input. |
 | `claude-switch key renew NAME` | Gives a gateway key a new token. |
 | `claude-switch key remove NAME` | Forgets a gateway key. |
 | `claude-switch refresh [--force]` | Refreshes the logins of the accounts that are not active. The timer runs it for you. |
@@ -227,12 +228,16 @@ From then on, the machine stays on the best account that has room left:
 
 - Only the week counts. By default an Ultra subscription comes first, then a key, then Max and the other
   plans, which have a 5-hour limit. `claude-switch auto order max` puts Max first on this machine, for
-  instance. Within a kind, the allowance that resets first goes first.
+  instance. Within a kind, the account in use stays until it runs out, so one is used up before the next
+  starts. Otherwise the allowance that resets first goes first.
 - When a session meets a limit, a hook claude-switch adds to `~/.claude/settings.json` moves the machine to
   the next account and wakes the session, which sends its request again on the new account.
 - Every 5 minutes while a Claude Code session is open, a timer checks the accounts and goes back to a better
   one once its limit resets.
 - A switch you type stays while its account has room.
+- An account you add is ranked with the others at once, and the machine goes to it when it comes first.
+  Added with `--switch`, the machine goes to it right away, and the next check moves on when another account
+  comes first.
 - An automatic switch between two claude.ai accounts restarts Claude Desktop without asking.
 
 `claude-switch auto off` takes the hook and the timer out again. [docs/auto.md](docs/auto.md) has the

@@ -17,8 +17,11 @@ STORE=$HOME/.claude-accounts
 SETTINGS=$HOME/.claude/settings.json
 mkdir -p "$HOME/.claude/sessions" "$STORE" "$SHARE" "$T/bin"
 chmod 700 "$STORE"
-# claude is never run here: this one logs any call.
-printf '#!/bin/sh\necho "$*" >> %q\n' "$T/calls" > "$T/bin/claude"
+# claude runs here only for a sign-in, which the stand-in makes with STUB_EMAIL and STUB_TOKEN. Any other call is
+# logged.
+printf '#!/bin/sh\necho "$*" >> %q\n' "$T/calls" > "$T/bin/claude-log"
+cp "$HERE/stub-claude.sh" "$T/bin/claude"
+export REAL_CLAUDE=$T/bin/claude-log
 cp "$HERE/fake-systemctl.sh" "$T/bin/systemctl"
 cp "$HERE/fake-notify.sh" "$T/bin/notify-send"
 cp "$USAGE_PY" "$SHARE/usage.py"
@@ -316,6 +319,50 @@ check "a session of Desktop: Desktop left alone" '[ "$(calls)" = "switch acct-a|
 check "a session of Desktop: not woken" '[ "$RC" -eq 0 ] && [ ! -s "$T/err" ] && grep -q "it is not woken" "$STORE/.auto.log"'
 check "a session of Desktop: the notification says how to bring Desktop along" \
     'grep -q "Claude Desktop stays on its account: close it and run claude-switch a@example.com to bring it along." "$T/notify"'
+
+# Adding with automatic switching on: the new account ranks with the others at once, and between two accounts of the
+# same kind the one the machine is on stays until it runs out.
+rm -f "$STORE/.usage/$U.refused.json"
+answer /api/oauth/usage U-token 200 "$(week 30 $(($(now) + 2 * DAY)))"
+stale "$U"
+"$SCRIPT" watch > /dev/null 2>&1
+check "adding: on the Ultra first" 'marked ultra'
+answer /api/oauth/usage U2-access 200 "$(week 10 $(($(now) + DAY)))"
+before=$(requests)
+rm -f "$T/desktop.log"
+STUB_EMAIL=u2@example.com STUB_TOKEN=U2 STUB_ORG=org-u2-0000 "$SCRIPT" login > "$T/out" 2>&1; rc=$?
+check "adding: the new account is read at once" '[ "$rc" -eq 0 ] && tail -n +$((before + 1)) "$T/requests" | grep -q U2-access'
+check "adding: says the machine stays" 'grep -q "^Added u2@example.com. Automatic switching ranks it with the others:$" "$T/out" \
+    && grep -q "^It stays on ultra, the best account with room.$" "$T/out"'
+check "a tie: the Ultra in use stays before one whose week resets sooner" 'marked ultra && [ ! -s "$T/desktop.log" ]'
+answer /api/oauth/usage U-token 200 "$(week 100 $(($(now) + 2 * DAY)))"
+stale "$U"
+"$SCRIPT" watch > /dev/null 2>&1
+check "a tie: the next Ultra once the one in use runs out" 'marked u2@example.com'
+answer /api/oauth/usage U-token 200 "$(week 5 $(($(now) + DAY / 2)))"
+week_passed "$U"
+"$SCRIPT" watch > "$T/out" 2>&1
+check "a tie: the Ultra in use stays, though another resets sooner" 'marked u2@example.com && [ ! -s "$T/out" ]'
+
+# An account added with --switch is used at once, and nothing holds it there, not even the account a switch by hand
+# held before: the next check moves the machine on when another account comes first.
+"$SCRIPT" a@example.com > /dev/null 2>&1
+check "adding with --switch: a hold before" '[ -f "$STORE/.hold" ]'
+answer /key/info G3-secret 200 "$(budget 1.0 $(($(now) + 10 * DAY)))"
+printf 'G3-secret\n' | "$SCRIPT" key add gw3 --base-url "http://127.0.0.1:$PORT/gw3" --switch > "$T/out" 2>&1
+check "adding with --switch: on the new key at once" '[ "$(env_token)" = G3-secret ] && grep -q "^Kept the gateway key gw3.$" "$T/out"'
+check "adding with --switch: nothing holds it, nor the account held before" '[ ! -e "$STORE/.hold" ]'
+check "adding with --switch: says the next check may move on" \
+    'grep -q "at its next check it goes to the best account with room, which may be another one." "$T/out"'
+# Neither Ultra is the one in use: the one whose week resets first goes first.
+"$SCRIPT" watch > "$T/out" 2>&1
+check "adding with --switch: the next check moves on to the best" \
+    'marked ultra && [ -z "$(env_token)" ] && grep -q "^Switched to ultra: " "$T/out"'
+# Added without a switch while an account is held: it stays held.
+"$SCRIPT" a@example.com > /dev/null 2>&1
+printf 'G4-secret\n' | "$SCRIPT" key add gw4 --base-url "http://127.0.0.1:$PORT/gw4" > "$T/out" 2>&1
+check "adding while an account is held: it stays" \
+    'marked a@example.com && grep -q "^It stays on a@example.com, chosen by hand, until it runs out.$" "$T/out"'
 
 # auto off: the hook and the timer go, the rest stays, with a hook as Windows writes it.
 jq ".hooks.StopFailure += [$WINDOWS_HOOK]" "$SETTINGS" > "$T/s" && cat "$T/s" > "$SETTINGS"

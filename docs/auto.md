@@ -31,7 +31,9 @@ account that isn't verified yet still has a 5-hour limit, and when it meets it, 
 out follow in the default order, so `claude-switch auto order max` ranks Max and the other plans first, then
 Ultra, then keys. `api` is taken as `key`. Without kinds, `claude-switch auto order` prints the order.
 
-Within a kind, the allowance that expires first goes first, so nothing that resets goes unused:
+Within a kind, the account the machine is on stays while it has room, so one account is used up before the next
+one starts. Between the others of that kind, the allowance that expires first goes first, so nothing that resets
+goes unused:
 
 - for subscriptions, the one whose week resets soonest,
 - for keys, a gateway budget that resets, the soonest first, then a budget that never resets, then a gateway
@@ -52,6 +54,14 @@ is too low.
 A switch you type, `claude-switch NAME` or a number in the prompt, stays while automatic switching is on and that
 account has room. Once it runs out, automatic switching takes over again. `claude-switch auto on` lets go of it
 too.
+
+### An account you add
+
+Adding an account, with `claude-switch login`, `claude-switch key add` or `a` in the prompt, doesn't switch to
+it. With automatic switching on, the new account is read and ranked with the others at once, and the machine
+goes to it when it comes first. Added with `--switch`, or with yes to `Switch to it once it's added?` in the
+prompt, the machine goes to it right away, and nothing holds it there, not even an account a switch by hand
+held before: the next check moves the machine on when another account comes first.
 
 ## When it switches
 

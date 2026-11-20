@@ -64,7 +64,9 @@ CLI is on, so a switch disconnects it, and `/remote-control` registers the sessi
 
 `claude-switch login` signs in beside the store, in a folder of its own, and never in `~/.claude`, so the
 live account changes only on a switch. It runs `claude auth login` there, saves the new account and asks
-for a name.
+for a name. The machine stays on its account, and claude.ai in Chrome goes back to it, see
+[chrome.md](chrome.md). `claude-switch login --switch` switches to the new account once it's saved, and
+`claude auth login` never sees `--switch`.
 
 `claude-switch login NAME` renews the sign-in of an account that is already saved. The sign-in page uses
 the claude.ai session of the browser, so claude.ai in Chrome goes to that account first, and the page

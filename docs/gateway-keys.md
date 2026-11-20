@@ -58,12 +58,15 @@ The prompt saves a key too. `claude-switch`, then `a`, asks for the kind of acco
 Which kind of account? k
 Name of the key: console
 Gateway URL (Enter for the Anthropic API):
+Switch to it once it's added? [y/N]
 Gateway key for console:
 ```
 
 An empty URL keeps an Anthropic API key, as `key add NAME --api-key` does, and a URL keeps a gateway key, as
 `key add NAME --base-url URL` does. The name is checked before the URL is asked, and a URL must start with
-`https://` or `http://`.
+`https://` or `http://`. Yes to `Switch to it once it's added?` switches to the key once it's kept, as
+`key add NAME --switch` does. Without it the machine stays on its account, and
+[automatic switching](auto.md#an-account-you-add), when it's on, ranks the new key with the others.
 
 `key renew NAME` gives a key a new token, asked the same way, in the variable its token was in. Its URL
 and model names stay. When the key is the active one, `settings.json` gets the new token too.

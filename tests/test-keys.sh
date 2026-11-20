@@ -412,7 +412,7 @@ check "the prompt prints no token" no_secret
 # Python's getpass does. The terminal echoes the token typed here, so no_secret can't hold.
 fresh prompt-add
 ASK='Select an account to switch to: ' KIND='Which kind of account? ' NAME='Name of the key: '
-URL='Gateway URL (Enter for the Anthropic API): '
+URL='Gateway URL (Enter for the Anthropic API): ' SWITCH="Switch to it once it's added? [y/N] "
 # TEXT shows in the prompt's output past its first SEEN bytes, within 10 s. TEXT SEEN
 shows() {
     local _
@@ -444,17 +444,21 @@ add_in_prompt() {
     kill "$pid" 2>/dev/null
     wait "$pid" 2>/dev/null
 }
-add_in_prompt "$ASK" a "$KIND" k "$NAME" k9 "$URL" "" "Gateway key for k9: " K9-secret "$ASK" q
+add_in_prompt "$ASK" a "$KIND" k "$NAME" k9 "$URL" "" "$SWITCH" "" "Gateway key for k9: " K9-secret "$ASK" q
 check "prompt add: the question" 'grep -aq "Which kind of account? " "$T/out" \
     && grep -aq "s) A subscription, signed in with the browser" "$T/out" && grep -aq "k) An API key or a gateway key" "$T/out"'
 check "prompt add, k without a URL: an Anthropic API key" \
     '[ "$(jq -r .env.ANTHROPIC_API_KEY "$HOME/.claude-accounts/key_k9.json")" = K9-secret ] \
     && [ "$(jq -r ".env.ANTHROPIC_BASE_URL // \"none\"" "$HOME/.claude-accounts/key_k9.json")" = none ]'
 check "prompt add, k: kept, and back to the list" 'grep -aq "Kept the gateway key k9" "$T/out" && [ "$(grep -ac "Claude Code accounts" "$T/out")" = 2 ]'
-add_in_prompt "$ASK" a "$KIND" K "$NAME" k10 "$URL" https://gw10.example "Gateway key for k10: " G10-secret "$ASK" q
+check "prompt add, k and Enter: says how to switch to it" 'grep -aq "Switch to it with: claude-switch k9" "$T/out" && marked gw1'
+add_in_prompt "$ASK" a "$KIND" K "$NAME" k10 "$URL" https://gw10.example "$SWITCH" n "Gateway key for k10: " G10-secret "$ASK" q
 check "prompt add, k with a URL: a gateway key at that URL" \
     '[ "$(jq -r .env.ANTHROPIC_AUTH_TOKEN "$HOME/.claude-accounts/key_k10.json")" = G10-secret ] \
     && [ "$(jq -r .env.ANTHROPIC_BASE_URL "$HOME/.claude-accounts/key_k10.json")" = https://gw10.example ]'
+check "prompt add, k and n: not switched to" 'marked gw1'
+add_in_prompt "$ASK" a "$KIND" k "$NAME" k12 "$URL" https://gw12.example "$SWITCH" y "Gateway key for k12: " K12-secret "$ASK" q
+check "prompt add, k and y: the machine is on the new key" 'grep -aq "Switched to k12, a gateway key" "$T/out" && marked k12'
 add_in_prompt "$ASK" a "$KIND" k "$NAME" gw1 "$ASK" q
 check "prompt add, a name already used: refused before the URL" \
     'grep -aq "Another account is already called gw1" "$T/out" && ! grep -aq "Gateway URL" "$T/out"'
@@ -467,8 +471,15 @@ check "prompt add, Enter: back to the list, nothing said" \
 add_in_prompt "$ASK" a "$KIND" x "$ASK" q
 check "prompt add, another answer: says what to type" 'grep -aq "Type s or k." "$T/out"'
 rm -f "$T/calls"
-add_in_prompt "$ASK" a "$KIND" s "$ASK" q
-check "prompt add, s: a sign-in" 'grep -q "^auth login" "$T/calls"'
+add_in_prompt "$ASK" a "$KIND" s "$SWITCH" "" "$ASK" q
+check "prompt add, s: a sign-in" 'grep -qx "auth login" "$T/calls"'
+
+# On the command line, key add --switch switches to the new key. key import has nothing to switch to.
+printf 'S1-secret\n' | "$SCRIPT" key add sw1 --base-url https://sw1.example --switch > "$T/out" 2>&1
+check "key add --switch: kept, then switched to" 'grep -q "^Kept the gateway key sw1.$" "$T/out" && marked sw1'
+"$SCRIPT" key import other --switch > "$T/out" 2>&1; rc=$?
+check "key import --switch: refused, it's the key in use already" \
+    '[ "$rc" -ne 0 ] && grep -q "Usage: claude-switch key import NAME" "$T/out" && [ ! -e "$HOME/.claude-accounts/key_other.json" ]'
 
 printf '%d passed, %d failed\n' "$passes" "$fails"
 [ "$fails" -eq 0 ]

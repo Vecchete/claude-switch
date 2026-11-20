@@ -243,6 +243,18 @@ def main():
         # The best account with room: Ultra, then a key, then a plan with a 5-hour window.
         rc, out, _ = m.run("best", *routable)
         check("best: Ultra first", out.strip() == ultra)
+        # Between two accounts of the same kind, the one the machine is on stays while it has room.
+        ultra2 = m.account("ultra2", "u2@example.com", "default_claude_max_20x", "U2-token")
+        Server.answers[("/api/oauth/usage", "U2-token")] = (200, usage(week=(60, now + DAY)))
+        m.run("read", "--max-age", "0", ultra2)
+        rc, out, _ = m.run("best", ultra, ultra2, maxed)
+        check("best: of two Ultras, the week that resets first", out.strip() == ultra2)
+        rc, out, _ = m.run("best", "--active", ultra, ultra, ultra2, maxed)
+        check("best: of two Ultras, the one the machine is on", out.strip() == ultra)
+        rc, out, _ = m.run("best", "--active", maxed, ultra, ultra2, maxed)
+        check("best: on an account of another kind, the kinds keep their order", out.strip() == ultra2)
+        os.remove(ultra2)
+        os.remove(m.store / ".usage" / f"{pathlib.Path(ultra2).stem}.json")
         full = (200, usage(week=(100, week_ends)))
         Server.answers[("/api/oauth/usage", "U-token")] = full
         m.run("read", "--max-age", "0", ultra)
@@ -280,7 +292,9 @@ def main():
         # A refusal holds until the limit that stopped the session resets.
         Server.answers[("/api/oauth/usage", "P-token")] = (200, usage(week=(40, now + DAY), window=(100, now + HOUR)))
         rc, out, _ = m.run("refuse", pro, "rate_limit", "You've hit your 5-hour limit")
-        hour = datetime.datetime.fromtimestamp((now + HOUR) / 1000).strftime("%H:%M")
+        # An hour from now is tomorrow in the last hour of the day: then it shows with its day.
+        moment = datetime.datetime.fromtimestamp((now + HOUR) / 1000)
+        hour = moment.strftime("%H:%M" if moment.date() == datetime.date.today() else "%a %H:%M")
         check("refuse: names the 5-hour window and its end", rc == 0 and out.strip() == f"reached its 5-hour limit, until {hour}")
         refusal = json.loads((m.store / ".usage" / f"{pathlib.Path(pro).stem}.refused.json").read_text())
         check("refuse: held until the window resets", abs(refusal["until"] - (now + HOUR)) < 1000)

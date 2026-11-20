@@ -191,7 +191,20 @@ check "login NAME given up: Chrome came back" '[ "$(sed -n 2p "$T/web")" = "--sw
 rm -f "$T/web"
 FAKE_WEB_LOG=$T/web STUB_EMAIL=b@example.com STUB_TOKEN=B5 "$SCRIPT" login second > "$T/out" 2>&1
 check "login NAME: Chrome came back once" '[ "$(sed -n 2p "$T/web")" = "--switch acct-a" ] && [ "$(wc -l < "$T/web")" = 2 ]'
+# A new account signed in without --switch: the machine stays, and claude.ai in Chrome goes back to the live one.
+rm -f "$T/web"
+FAKE_WEB_LOG=$T/web STUB_EMAIL=d@example.com STUB_TOKEN=D "$SCRIPT" login > "$T/out" 2>&1
+check "login: claude.ai in Chrome back on the live account" '[ "$(cat "$T/web")" = "--back acct-a" ]'
+check "login: says how to switch to it" 'grep -q "^Added d@example.com. Switch to it with: claude-switch d@example.com$" "$T/out"'
+# With --switch the machine goes to the new account, and claude auth login never sees --switch.
+rm -f "$T/web" "$T/args"
+FAKE_WEB_LOG=$T/web STUB_ARGS_LOG=$T/args STUB_EMAIL=e@example.com STUB_TOKEN=E "$SCRIPT" login --switch > "$T/out" 2>&1
+check "login --switch: added and switched to" 'grep -q "^Added e@example.com.$" "$T/out" && grep -q "^Switched to e@example.com.$" "$T/out" \
+    && [ "$(live_cred .claudeAiOauth.accessToken)" = E-access ]'
+check "login --switch: not passed to claude auth login" '[ "$(cat "$T/args")" = "auth login" ]'
+check "login --switch: Chrome goes to it, not back" '[ "$(cat "$T/web")" = "--switch acct" ]'
 rm -f "$T/web" "$HOME/.local/share/claude-switch/chrome-host.py"
+"$SCRIPT" a@example.com > /dev/null 2>&1
 
 # Two accounts with one email: the email alone does not choose.
 STUB_ORG=org-of-x-0000 STUB_EMAIL=a@example.com STUB_TOKEN=AX "$SCRIPT" login > "$T/out" 2>&1

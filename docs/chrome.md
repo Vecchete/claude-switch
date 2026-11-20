@@ -50,6 +50,11 @@ sign-in.
 When Chrome is closed, the switch waits in `~/.claude-accounts/.chrome-pending`, and the host applies it
 when Chrome starts, trying every 30 seconds for 10 minutes. A newer switch replaces it.
 
+A sign-in that adds an account goes through the browser, which can leave claude.ai on the new account while
+the machine stays on its own. Without `--switch`, `claude-switch login` then runs `chrome-host.py --back`
+with the active account: claude.ai goes back to it when a session of it is saved, and otherwise stays on the
+account open there, rather than signed out.
+
 ## Remote Control
 
 The first time an account opens a Remote Control session in Chrome, claude.ai asks for a fresh sign-in

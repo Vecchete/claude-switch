@@ -12,14 +12,15 @@ Only you can read them.
 
 Only the week counts. The best account with room is of the first kind in the order, by default: ultra, a
 subscription with no 5-hour window, then key, an API or gateway key, then max, a subscription with a 5-hour window
-(Max, Pro, Team). Within a kind, what expires first goes first: the week that resets soonest, a gateway budget that
+(Max, Pro, Team). Within a kind, the account the machine is on stays while it has room, so one runs out before the
+next one starts. Among the others, what expires first goes first: the week that resets soonest, a gateway budget that
 resets before one that doesn't, credit nobody can read last.
 
     usage.py sessions                     exit 0 when Claude Code has a session open here, 1 when not
     usage.py read [--max-age S] [--timeout S] FILE...
                                           read again the accounts whose reading is older than S seconds (300)
     usage.py left FILE...                 FILE, a tab and what it has left, one line each
-    usage.py best [--hold FILE] [--order KIND,...] FILE...
+    usage.py best [--hold FILE] [--active FILE] [--order KIND,...] FILE...
                                           the account the machine should be on, exit 1 when none has room
     usage.py refuse FILE REASON [MESSAGE] FILE refused a session for REASON: rate_limit, billing_error, budget or
                                           authentication_failed. Prints why, as a phrase
@@ -371,9 +372,10 @@ def parse_order(text):
     return order + [kind for kind in KINDS if kind not in order]
 
 
-def rank(file, account, reading, now, order=KINDS):
-    """(the place of its kind in the order, then what expires first) for an account with room, smaller first."""
-    tier = order.index(kind_of(account, reading))
+def rank(file, account, reading, now, order=KINDS, active=None):
+    """(the place of its kind in the order, then whether the machine is on it, then what expires first) for an
+    account with room, smaller first."""
+    place = (order.index(kind_of(account, reading)), 0 if active is not None and file == active else 1)
     if is_key(account):
         budget = (reading or {}).get("budget")
         if budget and budget.get("max") is not None:
@@ -383,11 +385,11 @@ def rank(file, account, reading, now, order=KINDS):
         else:
             # A gateway that gave no budget yet, before credit nobody can read.
             expires = (3, 0) if gateway_of(account) else (4, 0)
-        return (tier,) + expires + (pathlib.Path(file).name,)
+        return place + expires + (pathlib.Path(file).name,)
     weekly = (reading or {}).get("weekly") or {}
     resets = weekly.get("resets")
     expires = (0, resets, weekly.get("used") or 0) if resets and resets > now else (1, 0, 0)
-    return (tier,) + expires + (pathlib.Path(file).name,)
+    return place + expires + (pathlib.Path(file).name,)
 
 
 def usable(file, account, now):
@@ -403,7 +405,7 @@ def command_best(arguments):
         print(arguments.hold)
         return 0
     order = parse_order(arguments.order)
-    ranked = sorted((rank(file, account, load(reading_path(file)), now, order), file)
+    ranked = sorted((rank(file, account, load(reading_path(file)), now, order, arguments.active), file)
                     for file, account in accounts.items() if account and usable(file, account, now))
     if not ranked:
         return 1
@@ -564,6 +566,7 @@ def main(argv):
         commands.add_parser(name).add_argument("files", nargs="*")
     best = commands.add_parser("best")
     best.add_argument("--hold")
+    best.add_argument("--active")
     best.add_argument("--order", default=",".join(KINDS))
     best.add_argument("files", nargs="*")
     refuse = commands.add_parser("refuse")
