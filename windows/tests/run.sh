@@ -23,11 +23,13 @@ PASSED=()
 FAILED=()
 run switch "$TESTS/test-switch.sh" "$WINDOWS/claude-switch.py"
 run refresh "$TESTS/test-refresh.sh" "$WINDOWS/claude-switch.py"
+run keys "$TESTS/test-keys.sh" "$WINDOWS/claude-switch.py"
 run switch-desktop "$TESTS/test-switch-desktop.sh" "$WINDOWS/claude-switch.py"
 run switch-chrome python3 -I "$TESTS/test-switch-chrome.py" "$WINDOWS/claude-switch.py" "$WINDOWS/chrome-host.py"
 run chrome-host python3 -I "$TESTS/test-chrome-host.py" "$WINDOWS/chrome-host.py"
 run desktop python3 -I "$TESTS/test-desktop.py" "$WINDOWS/desktop.py"
 run smoke python3 -I "$HERE/test-switch.py"
+run smoke-keys python3 -I "$HERE/test-keys.py"
 if command -v pwsh >/dev/null; then
     run powershell pwsh -NoProfile -NonInteractive -File "$HERE/test-powershell.ps1"
 else

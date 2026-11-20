@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Breaks one guard of the Windows port at a time, in a copy, and runs the Windows suite that must catch it. A mutant
-that stays green is a guard no test holds. Each one undoes something only Windows does, seen on the PC on 09/11/2026.
+that stays green is a guard no test holds. Each one undoes something only Windows does, seen on the PC on 09/11/2026,
+or a guard of the gateway keys and their Tab completion, which tests/test-keys.sh can't check on Windows.
 tests/mutants.py does the same for the Linux version. The suites end a stand-in Desktop only, never the real one: every
 run that could reach taskkill gets a fake one. desktop.py and localstorage.py are copied together, as desktop.py loads
-localstorage.py from its own folder. Windows only.
+localstorage.py from its own folder, and a mutant of completion.ps1 runs in a copy of the PowerShell files and of the
+extension's manifest, which test-powershell.ps1 reads too. Windows only.
 
 Usage: py -3 -I windows\\tests\\mutants.py [-j JOBS] [NAME...]
 """
@@ -23,7 +25,8 @@ if os.name != "nt":
 HERE = pathlib.Path(__file__).resolve().parent
 WINDOWS = HERE.parent
 TARGETS = {"switch": WINDOWS / "claude-switch.py", "desktop": WINDOWS / "desktop.py",
-           "localstorage": WINDOWS / "localstorage.py", "host": WINDOWS / "chrome-host.py"}
+           "localstorage": WINDOWS / "localstorage.py", "host": WINDOWS / "chrome-host.py",
+           "completion": WINDOWS / "completion.ps1"}
 TOGETHER = ("desktop", "localstorage")
 
 # (name, target, suite, text of the target, what replaces it)
@@ -207,6 +210,102 @@ MUTANTS = [
      '            and not DESKTOP_PROGRAM.search(process.get("ExecutablePath") or "")]\n', "]\n"),
     ("any-claude-is-a-server", "switch", "switch",
      'REMOTE_CONTROL = re.compile(r"\\sremote-control(\\s|$)")', 'REMOTE_CONTROL = re.compile(r".")'),
+    # The gateway keys, which tests/test-keys.sh can't check on Windows.
+    ("key-unkept-switched-over", "switch", "keys",
+     '    if live_key()[0] == 2:\n        die("~/.claude/settings.json holds a gateway key no account keeps, nothing changed.',
+     '    if False:\n        die("~/.claude/settings.json holds a gateway key no account keeps, nothing changed.'),
+    ("key-other-env-dropped", "switch", "keys",
+     '    env = {key: "" if key in KEY_ENV else value for key, value in current.items()}\n',
+     '    env = {key: "" for key in current if key in KEY_ENV}\n'),
+    ("key-entries-taken-out", "switch", "keys",
+     '    env = {key: "" if key in KEY_ENV else value for key, value in current.items()}\n',
+     "    env = {key: value for key, value in current.items() if key not in KEY_ENV}\n"),
+    ("key-empty-is-a-value", "switch", "keys",
+     '    return {key: value for key, value in env.items() if key in KEY_ENV and value != ""}\n',
+     "    return {key: value for key, value in env.items() if key in KEY_ENV}\n"),
+    ("key-link-replaced", "switch", "keys", "    return pathlib.Path(os.path.realpath(SETTINGS))\n", "    return SETTINGS\n"),
+    ("key-no-settings-not-created", "switch", "keys",
+     "    if not target.exists() or kept_owner(target, aside):\n        replace(aside, target)\n",
+     "    if not target.exists():\n        aside.unlink()\n    elif kept_owner(target, aside):\n        replace(aside, target)\n"),
+    ("key-unreadable-settings-unsaid", "switch", "keys",
+     "    if not isinstance(current, dict):\n        die(\"~/.claude/settings.json can't be read as JSON, nothing changed.\")\n",
+     "    if not isinstance(current, dict):\n        settings, current = {}, {}\n"),
+    ("key-left-on-login", "switch", "keys",
+     "        if key is not None:\n            set_key_env()\n            warn_environment(file)\n",
+     "        if key is not None:\n            warn_environment(file)\n"),
+    ("key-left-on-other-login", "switch", "keys",
+     "    if key is not None:\n        set_key_env()\n    warn_environment(file)\n", "    warn_environment(file)\n"),
+    ("key-half-switch-on-read-only", "switch", "keys", "    if key is not None:\n        require_writable_settings()\n", ""),
+    ("key-unkept-overwritten-by-key", "switch", "keys",
+     "def switch_to_key(file, account):\n    require_kept_key()\n", "def switch_to_key(file, account):\n"),
+    ("key-refreshed", "switch", "keys",
+     "        # A gateway key has no login to refresh.\n        if is_key(file):\n            continue\n", ""),
+    ("key-known-by-token", "switch", "keys",
+     '        score = 3 if key == live else 2 if key.get("ANTHROPIC_BASE_URL") == live.get("ANTHROPIC_BASE_URL") else 1\n',
+     "        score = 1\n"),
+    ("key-headers-block", "switch", "keys", "    return (2, None) if key_in_settings() else (1, None)\n", "    return 2, None\n"),
+    ("key-edits-lost", "switch", "keys", '    save_live()\n    save_live_key()\n    if first == "":\n',
+     '    save_live()\n    if first == "":\n'),
+    ("key-twin-kept", "switch", "keys", "    twin = key_twin(data, file)\n    if twin is not None:\n",
+     "    twin = key_twin(data, file)\n    if False:\n"),
+    ("key-file-overwritten", "switch", "keys",
+     '    file = key_file(name)\n    if file.exists():\n        die(f"Another account is kept as {file.name}, choose another name.")\n',
+     "    file = key_file(name)\n"),
+    ("key-login-signs-in", "switch", "keys", "        if is_key(wanted):\n", "        if False:\n"),
+    ("key-like-bearer", "switch", "keys", '(like_env.get("ANTHROPIC_API_KEY") is not None\n', "(False\n"),
+    ("key-add-holds-lock", "switch", "keys", '    unlock_store()\n    token = ""\n', '    token = ""\n'),
+    ("key-renew-not-live", "switch", "keys", "    if active:\n        set_key_env(file)\n", "    if active:\n"),
+    ("key-remove-leaves-entries", "switch", "keys", "        set_key_env()\n        file.unlink(missing_ok=True)\n",
+     "        file.unlink(missing_ok=True)\n"),
+    ("key-model-kept-unsaid", "switch", "keys",
+     '        warn(f"A running session that started on the model {model} keeps it: /model in it picks another.")\n',
+     "        pass\n"),
+    ("key-shell-ranks-ignored", "switch", "keys",
+     '        if isinstance(account, dict) and filled(alt(account.get(var), "")):\n            break\n', ""),
+    ("key-shell-settings-ignored", "switch", "keys", "        if var in settings:\n            continue\n", ""),
+    ("key-switch-no-env-warning", "switch", "keys", "    set_key_env(file)\n    warn_environment(file)\n",
+     "    set_key_env(file)\n"),
+    ("key-overrides-unsaid", "switch", "keys",
+     "    if live is not None:\n        remind_overrides(live)\n    remind_signins()\n", "    remind_signins()\n"),
+    ("key-overrides-unranked", "switch", "keys",
+     '        rank = 2 if key_token(key_set(dig(account.data, "env"))) != "" else 7\n', "        rank = 7\n"),
+    ("key-prompt-forgets-unkept", "switch", "keys", "        remind_unkept_key()\n        if live is not None:\n",
+     "        if live is not None:\n"),
+    ("key-prompt-marks-login", "switch", "keys", "        live = active_file()\n        files = accounts()\n",
+     "        live = live_file()\n        files = accounts()\n"),
+    ("key-unkept-marks-login", "switch", "keys", "    return live_file() if status == 1 else None\n",
+     "    return live_file()\n"),
+    ("temp-files-of-others-removed", "switch", "keys", "    for path in WRITING:\n",
+     '    for path in (f"{CREDENTIALS}.switch", f"{CONFIG}.switch", f"{settings_target()}.switch"):\n'),
+    ("temp-files-left", "switch", "keys",
+     '    for path in (f"{CREDENTIALS}.switch", f"{CONFIG}.switch", f"{settings_target()}.switch"):\n'
+     "        with contextlib.suppress(OSError):\n            os.remove(path)\n    recover_refreshes()\n",
+     "    recover_refreshes()\n"),
+    # What only Windows does to the gateway keys.
+    ("key-read-only-attribute-ignored", "switch", "keys",
+     "    if WINDOWS and target.is_file() and not os.access(target, os.W_OK):\n", "    if False:\n"),
+    ("key-folder-acl-ignored", "switch", "keys", "    if not WINDOWS:\n        return os.access(folder, os.W_OK)\n",
+     "    if True:\n        return os.access(folder, os.W_OK)\n"),
+    ("key-token-bom-kept", "switch", "keys", '.decode("utf-8-sig", errors="replace")', '.decode("utf-8", errors="replace")'),
+    ("settings-bom-unread", "switch", "keys",
+     '    return json.loads(pathlib.Path(path).read_text(encoding="utf-8-sig"))\n',
+     '    return json.loads(pathlib.Path(path).read_text(encoding="utf-8"))\n'),
+    ("key-name-unsafe", "switch", "keys", '    return STORE / ("key_" + re.sub(r"[^\\w@.-]", "_", name) + ".json")\n',
+     '    return STORE / ("key_" + name + ".json")\n'),
+    # The Tab completion of the gateway keys.
+    ("completion-key-missing", "completion", "powershell",
+     "$candidates = @('list', 'login', 'key', 'rename', 'refresh', 'help') + @(& $accounts)",
+     "$candidates = @('list', 'login', 'rename', 'refresh', 'help') + @(& $accounts)"),
+    ("completion-keys-after-login", "completion", "powershell", "$candidates = @(& $accounts 'logins')",
+     "$candidates = @(& $accounts)"),
+    ("completion-key-actions-missing", "completion", "powershell", "$candidates = 'import', 'add', 'renew', 'remove'",
+     "$candidates = @()"),
+    ("completion-keys-not-renewed", "completion", "powershell",
+     "if ($before[2].Extent.Text -eq 'renew' -or $before[2].Extent.Text -eq 'remove') {", "if ($false) {"),
+    ("completion-like-missing", "completion", "powershell", "} elseif ($before[-1].Extent.Text -eq '--like') {",
+     "} elseif ($false) {"),
+    ("completion-strict-mode-unsafe", "completion", "powershell",
+     "$isKey = $properties['kind'] -and $account.kind -eq 'key'", "$isKey = $account.kind -eq 'key'"),
     # The pipe of the Chrome host.
     ("pending-not-followed", "host", "chrome",
      "    threading.Thread(target=follow_pending, daemon=True).start()\n    while True:\n        try:\n"
@@ -220,8 +319,13 @@ MUTANTS = [
 def command(suite, files):
     if suite == "switch":
         return [sys.executable, "-I", str(HERE / "test-switch.py"), str(files["switch"])]
+    if suite == "keys":
+        return [sys.executable, "-I", str(HERE / "test-keys.py"), str(files["switch"])]
     if suite == "desktop":
         return [sys.executable, "-I", str(HERE / "test-desktop.py"), str(files["desktop"])]
+    if suite == "powershell":
+        return ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(HERE / "test-powershell.ps1"),
+                "-Repo", str(files["repo"])]
     return [sys.executable, "-I", str(HERE / "test-chrome.py"), str(files["switch"]), str(files["host"])]
 
 
@@ -239,6 +343,13 @@ def run(mutant):
             if other != target:
                 files[other] = folder / TARGETS[other].name
                 shutil.copy2(TARGETS[other], files[other])
+        if suite == "powershell":
+            files["repo"] = folder / "repo"
+            shutil.copytree(WINDOWS, files["repo"] / "windows", ignore=shutil.ignore_patterns("__pycache__"))
+            manifest = pathlib.Path("share", "chrome-extension", "manifest.json")
+            (files["repo"] / manifest).parent.mkdir(parents=True)
+            shutil.copy2(WINDOWS.parent / manifest, files["repo"] / manifest)
+            shutil.copy2(mutated, files["repo"] / "windows" / mutated.name)
         result = subprocess.run(command(suite, files), capture_output=True, text=True, encoding="utf-8", timeout=900,
                                 env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
                                 creationflags=subprocess.CREATE_NO_WINDOW)

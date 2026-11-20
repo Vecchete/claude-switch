@@ -64,6 +64,8 @@ try {
     Add-Account 'other@example.net_cccccccc.json' 'my laptop' 'other@example.net'
     Add-Account 'x@example.com_dddddddd.json' "it's `$(New-Item -ItemType File PWNED)" 'x@example.com'
     Add-Account 'y@example.com_eeeeeeee.json' 'a,b' 'y@example.com'
+    $key = @{ kind = 'key'; name = 'gw'; env = @{ ANTHROPIC_AUTH_TOKEN = 'secret' } } | ConvertTo-Json -Depth 5
+    [System.IO.File]::WriteAllText((Join-Path $store 'key_gw.json'), $key, (New-Object System.Text.UTF8Encoding $false))
     Set-Content -LiteralPath (Join-Path $store 'broken.json') -Value '{not json'
 
     . (Join-Path $Repo 'windows/completion.ps1')
@@ -72,7 +74,8 @@ try {
         @((TabExpansion2 -inputScript $Line -cursorColumn $Line.Length).CompletionMatches | ForEach-Object { $_.CompletionText })
     }
     function Offers-Ours([string[]]$Completions) {
-        [bool]($Completions | Where-Object { $_ -in 'list', 'login', 'work', 'lucas@example.com', '--force' })
+        [bool]($Completions | Where-Object { $_ -in 'list', 'login', 'key', 'import', 'work', 'gw', 'lucas@example.com',
+                '--force' })
     }
 
     $first = Complete 'claude-switch '
@@ -95,6 +98,28 @@ try {
     Check 'login: the accounts' (((Complete 'claude-switch login wo') -join ',') -eq 'work')
     Check 'rename: the accounts' ((Complete 'claude-switch rename ') -contains 'other@example.net')
     Check 'refresh: --force' (((Complete 'claude-switch refresh ') -join ',') -eq '--force')
+    # The gateway keys.
+    Check 'first word: key' ($first -contains 'key')
+    Check 'first word: the gateway keys by name' ($first -contains 'gw')
+    $login = Complete 'claude-switch login '
+    Check 'login: the claude.ai accounts only' (($login -contains 'lucas@example.com') -and -not ($login -contains 'gw'))
+    Check 'rename: every account, the keys too' ((Complete 'claude-switch rename ') -contains 'gw')
+    Check 'key: import, add, renew and remove' (((Complete 'claude-switch key ') -join ',') -eq 'import,add,renew,remove')
+    Check 'key remove: the gateway keys only' (((Complete 'claude-switch key remove ') -join ',') -eq 'gw')
+    Check 'key renew: the gateway keys only' (((Complete 'claude-switch key renew ') -join ',') -eq 'gw')
+    Check 'key add --like: the gateway keys only' (((Complete 'claude-switch key add new --like ') -join ',') -eq 'gw')
+    Check 'key add, another option: nothing of ours' (-not (Offers-Ours (Complete 'claude-switch key add new --base-url ')))
+    Check 'key import: nothing of ours for the new name' (-not (Offers-Ours (Complete 'claude-switch key import ')))
+    # A profile may turn on Set-StrictMode, where reading a property an object lacks throws.
+    Set-StrictMode -Version Latest
+    try {
+        $strict = Complete 'claude-switch '
+        Check 'under Set-StrictMode: the accounts and the keys' (($strict -contains 'lucas@example.com') -and
+            ($strict -contains 'gw'))
+        Check 'under Set-StrictMode: login without the keys' (-not ((Complete 'claude-switch login ') -contains 'gw'))
+    } finally {
+        Set-StrictMode -Off
+    }
     # Past what it completes, PowerShell offers file names, never a command or an account.
     Check 'nothing of ours after list' (-not (Offers-Ours (Complete 'claude-switch list ')))
     Check 'nothing of ours after a name' (-not (Offers-Ours (Complete 'claude-switch work ')))

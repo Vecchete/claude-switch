@@ -155,4 +155,6 @@ claude-switch: ANTHROPIC_AUTH_TOKEN is set in this shell, a claude started from 
 
 - claude.ai in Chrome and Claude Desktop don't use gateway keys, so a switch to a key leaves them on
   their account.
-- The [Windows port](../windows/README.md) has no gateway keys yet.
+- The [Windows port](../windows/README.md) has gateway keys too. There `settings.json` takes the ACL of its
+  folder rather than a mode, owner and group, and one marked read-only stops a switch to or from a key
+  before anything changes, see [What differs from Linux](../windows/README.md#what-differs-from-linux).

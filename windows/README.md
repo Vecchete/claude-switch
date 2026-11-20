@@ -4,14 +4,15 @@ The Windows 11 port of claude-switch. It is experimental: it was tested on one W
 few things were never run there for real yet, see [Status](#status) and
 [Not verified yet](#not-verified-yet).
 
-The port follows `bin/claude-switch`, `share/chrome-host.py` and `share/desktop.py` as of commit bce90fb,
-so it has no [gateway keys](../docs/gateway-keys.md) yet. When the Linux version changes, the port changes
-with it: `windows/tests/run.sh` says on Linux whether it still behaves the same, and
-`windows\tests\run.ps1` checks on Windows what only Windows does.
+The port follows `bin/claude-switch`, `share/chrome-host.py` and `share/desktop.py` as of commit db37ebb,
+[gateway keys](../docs/gateway-keys.md) included. When the Linux version changes, the port changes with it:
+`windows/tests/run.sh` says on Linux whether it still behaves the same, and `windows\tests\run.ps1` checks
+on Windows what only Windows does.
 
 A switch moves the same things as on Linux: the login of Claude Code, the claude.ai session in Chrome,
-the sign-in of Claude Desktop, and with the last two the Remote Control registration of each account. On
-Windows it also brings along a Remote Control server started with `claude remote-control`, and the
+the sign-in of Claude Desktop, and with the last two the Remote Control registration of each account. A
+gateway key goes in and out of the `env` of `%USERPROFILE%\.claude\settings.json`, as on Linux. On
+Windows a switch also brings along a Remote Control server started with `claude remote-control`, and the
 settings Claude Desktop keeps per account, which go over to the next account.
 
 ## Status
@@ -19,6 +20,7 @@ settings Claude Desktop keeps per account, which go over to the next account.
 | Part | Files | State |
 |---|---|---|
 | The command | `claude-switch.py`, `claude-switch.cmd` | Runs on Windows: the store, `list` and `rename`. No real switch yet |
+| Gateway keys | `claude-switch.py` | `key import`, `add`, `renew` and `remove` and the switches to and from a key pass on scratch profiles, on Windows and on Linux. Not tried against a real gateway yet |
 | claude.ai in Chrome | `chrome-host.py`, `chrome-host.cmd`, and the extension of `share/chrome-extension` as it is | The named pipe works end to end with a stand-in extension, a second host and the pending file. Not tried with the extension loaded in Chrome yet |
 | Claude Desktop | `desktop.py`, `localstorage.py` | Finds the folder, the main process and the account of a running Desktop. Switch, quit and the carrying over pass on a scratch profile, and the carrying over ran both ways on a copy of real Desktop data. Never quit or switched for real |
 | Remote Control | `claude-switch.py`, `chrome-host.py`, `desktop.py` | The registration cookie moves with Chrome and Desktop, as on Linux. A `claude remote-control` server is stopped when you answer yes |
@@ -48,8 +50,9 @@ settings Claude Desktop keeps per account, which go over to the next account.
 2. For claude.ai in Chrome, load the extension once: open `chrome://extensions`, turn on Developer mode,
    click Load unpacked and pick `%USERPROFILE%\.local\share\claude-switch\chrome-extension`.
 
-3. Run `claude-switch login` once for each account, then `claude-switch NAME`. `claude-switch help` has
-   the rest.
+3. Run `claude-switch login` once for each account, then `claude-switch NAME`. A gateway key is kept with
+   `claude-switch key import NAME` or `claude-switch key add NAME`, see
+   [Gateway keys](../docs/gateway-keys.md). `claude-switch help` has the rest.
 
 ## Where things are
 
@@ -60,7 +63,8 @@ The places of the Linux version, under the user profile:
 | `~/.local/bin/claude-switch` | `%USERPROFILE%\.local\bin\claude-switch.cmd` | The command. `claude.exe` can be in that folder (the native installer) or in `%LOCALAPPDATA%\Microsoft\WinGet\Links` (winget), it only has to be in the `PATH` |
 | `~/.local/share/claude-switch/` | `%USERPROFILE%\.local\share\claude-switch\` | `claude-switch.py`, the helpers, `notify.ps1`, `completion.ps1`, the extension and the host manifest |
 | `~/.claude/.credentials.json`, `~/.claude.json` | `%USERPROFILE%\.claude\.credentials.json`, `%USERPROFILE%\.claude.json` | The login and the account a switch moves |
-| `~/.claude-accounts/` | `%USERPROFILE%\.claude-accounts\` | The accounts, the saved sessions, the lock and `.task.log` |
+| `~/.claude/settings.json` | `%USERPROFILE%\.claude\settings.json` | Where the entries of a gateway key go, in its `env` |
+| `~/.claude-accounts/` | `%USERPROFILE%\.claude-accounts\` | The accounts, the gateway keys (`key_<name>.json`), the saved sessions, the lock and `.task.log` |
 | | `%USERPROFILE%\.claude-accounts\.desktop\<accountUuid>.web\` | The storage of Desktop's window as each account left it, from which what the account lost comes back |
 | The systemd timer `claude-switch-refresh` | The scheduled task `claude-switch-refresh` | 2 and 15 minutes after logon, then every 4 hours |
 | `NativeMessagingHosts/` of each Chrome | `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.lucasvecchete.claude_switch` | Where Chrome and Chrome Beta find the host |
@@ -124,6 +128,20 @@ PowerShell does what only PowerShell does: the install, the Tab completion and t
   than by its cookies. A saved sign-in only opens for the same Windows account on the same machine.
 - Windows can't replace a file another program holds open. The switch tries again for 5 seconds, then
   stops, and the next command completes a switch cut between its two renames, as on Linux.
+- A switch to or from a gateway key writes `settings.json` aside and renames it into place, as on Linux.
+  Windows has no mode, owner and group to keep: the new file takes the ACL of its folder, as
+  `.claude.json` does at a switch. Windows can't rename a file over one marked read-only, so a
+  `settings.json` with that attribute stops such a switch before anything changes, with the `attrib`
+  command that clears it. A folder an ACL keeps you from writing in stops it too, but the read-only
+  attribute of a folder means nothing on Windows and such an ACL only shows when a file is made, so the
+  switch makes and removes one there first. It doesn't use Python's `tempfile` for that, which takes the
+  access denied of Windows for a name already in use and tries other names without end.
+- A gateway token piped into `key add` or `key renew` from Windows PowerShell can come with a BOM in
+  front, which is dropped, and a Windows line end goes with the other whitespace. Typed at the prompt, the
+  token goes through the console without echo.
+- The file of a gateway key replaces what a file name can't hold with `_`, as on Linux. On NTFS that
+  matters more: a colon would name a stream of another file. NTFS also takes `key_GW.json` and
+  `key_gw.json` for the same file, so a key named like another but for the case is refused.
 - The pipe: the first host keeps it, and a second one waits until the first is gone, where on Linux the
   newest host takes the socket over. It has the default security of a named pipe, which lets the other
   users of the machine open it for reading.
@@ -155,17 +173,25 @@ suites of the Linux version against the port:
 | `tests/test-chrome-host.py` | `chrome-host.py` | 55 passed |
 | `tests/test-desktop.py` | `desktop.py` | 51 passed |
 
-On Windows 11 Pro 26300, with Python 3.14.3, Windows PowerShell 5.1, Claude Code 2.1.302, Claude Desktop
-4.23118.0 from the Store and Chrome 156, on 2026-11-09, `windows\tests\run.ps1` ran:
+Those runs came before the gateway keys. `windows/tests/run.sh` now runs `tests/test-keys.sh` against the
+port too, which hasn't run yet: it needs `jq` and the Linux `claude`. On 2026-11-20, on Linux in WSL
+(Ubuntu 26.04, Python 3.14.4), `windows/tests/test-switch.py` passed 38 checks and
+`windows/tests/test-keys.py` 134, with what only Linux does in place of what only Windows does.
+
+On Windows 11 Pro 26300, with Python 3.14.3 and Windows PowerShell 5.1, on 2026-11-20,
+`windows\tests\run.ps1` ran:
 
 | Suite | Run against | Checks |
 |---|---|---|
 | `windows/tests/test-switch.py` | `claude-switch.py` | 43 passed |
+| `windows/tests/test-keys.py` | `claude-switch.py` | 135 passed |
 | `windows/tests/test-desktop.py` | `desktop.py` and `localstorage.py` | 86 passed |
 | `windows/tests/test-chrome.py` | `claude-switch.py` and `chrome-host.py` | 14 passed |
-| `windows/tests/test-powershell.ps1` | `install.ps1`, `completion.ps1`, `notify.ps1`, `tests/run.ps1` | 29 passed |
+| `windows/tests/test-powershell.ps1` | `install.ps1`, `completion.ps1`, `notify.ps1`, `tests/run.ps1` | 41 passed |
 
-`windows/tests/mutants.py` breaks the Windows guards one at a time, in a copy: 73 of 73 killed.
+`windows/tests/mutants.py` breaks the Windows guards, those of the gateway keys and those of their Tab
+completion one at a time, in a copy: 117 of 117 killed. Eight runs of `test-keys.py` at once, the load of
+`mutants.py -j 8`, all passed, so no mutant was killed by a check that fails under load.
 
 `test-desktop.py` writes and reads the Local Storage of Desktop with its own code, after the formats of
 LevelDB, so a mistake of `localstorage.py` can't hide behind the same mistake in the test. On a copy of a
@@ -175,9 +201,11 @@ ran on a copy of real Desktop data, from one account to the other and back: only
 and no setting was lost.
 
 The suites of `tests/` drive bash, symbolic links and `/proc`, so they stay on Linux. On Windows,
-`test-desktop.py` and `test-chrome.py` take their place, with a scratch profile, stand-in processes that
-hold files the way Desktop does, and a pipe named after a user of their own. Every run that could end a
-process gets a stand-in taskkill, so they never touch the real accounts, Chrome or Desktop.
+`test-keys.py`, `test-desktop.py` and `test-chrome.py` take their place, with a scratch profile, a
+stand-in claude, stand-in processes that hold files the way Desktop does, and a pipe named after a user of
+their own. Every run that could end a process gets a stand-in taskkill, so they never touch the real
+accounts, Chrome or Desktop. `test-keys.py` gives a folder of its scratch profile an ACL that denies
+making files, and removes it again before it deletes the folder.
 
 ## Behavior seen on Windows
 
@@ -207,6 +235,11 @@ These were read on the test machine, without changing anything:
 - Desktop keeps the Code sessions of an account under
   `claude-code-sessions\<accountUuid>\<organizationUuid>`, and that organization is the one the saved
   login of the account names.
+- Windows refuses to rename a file over one marked read-only ("Access is denied"), and `os.access` of
+  Python says such a file can't be written.
+- In a folder whose ACL keeps you from making files, `tempfile.mkstemp` of Python 3.14 takes the access
+  denied for a name already in use and tries other names without end. A switch to a key hung there in
+  `windows/tests/test-keys.py` until claude-switch made its own test file instead.
 - Anthropic renamed Max 5x to Max and Max 20x to Ultra on 2026-10-30. Claude Code 2.1.302 still says
   `max` for both, in the login and in the profile, and tells Ultra by the rate limit tier
   `default_claude_max_20x`. A token refresh keeps the tier the login was given, while the profile in
@@ -224,6 +257,9 @@ What a tester on Windows can still check:
    drafts of the first account are still there.
 4. Switch with Chrome open, then with Chrome closed (the pending file), and run `chrome-host.py --status`.
 5. Switch while `claude remote-control` runs.
+6. Keep a gateway key with `claude-switch key add`, typing the token at the prompt in Windows Terminal,
+   with PowerShell and with cmd. Then switch to it and back with a session open, and check with
+   `claude auth status` that the session follows.
 
 ## Sources
 

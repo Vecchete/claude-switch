@@ -1,7 +1,7 @@
-# Runs the Windows suites of the port on the PC: the smoke tests, the Desktop and Chrome branches, and the PowerShell
-# checks, in Windows PowerShell and in PowerShell 7 when it is installed. They use scratch profiles, stand-in processes
-# and a pipe of their own, and never touch the real accounts, Chrome or Claude Desktop. windows\tests\mutants.py then
-# says whether they still catch every guard.
+# Runs the Windows suites of the port on the PC: the smoke tests, the gateway keys, the Desktop and Chrome branches, and
+# the PowerShell checks, in Windows PowerShell and in PowerShell 7 when it is installed. They use scratch profiles,
+# stand-in processes and a pipe of their own, and never touch the real accounts, Chrome or Claude Desktop.
+# windows\tests\mutants.py then says whether they still catch every guard.
 # Usage: powershell -ExecutionPolicy Bypass -File windows\tests\run.ps1
 $ErrorActionPreference = 'Continue'
 $env:PYTHONDONTWRITEBYTECODE = '1'
@@ -19,6 +19,7 @@ function Invoke-Suite([string]$Name, [scriptblock]$Command) {
 }
 
 Invoke-Suite 'switch' { py -3 -I (Join-Path $PSScriptRoot 'test-switch.py') }
+Invoke-Suite 'keys' { py -3 -I (Join-Path $PSScriptRoot 'test-keys.py') }
 Invoke-Suite 'desktop' { py -3 -I (Join-Path $PSScriptRoot 'test-desktop.py') }
 Invoke-Suite 'chrome' { py -3 -I (Join-Path $PSScriptRoot 'test-chrome.py') }
 Invoke-Suite 'powershell' {

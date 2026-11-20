@@ -22,6 +22,7 @@ there, once it is closed.
 """
 import contextlib
 import datetime
+import getpass
 import hashlib
 import json
 import os
@@ -30,6 +31,7 @@ import re
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -47,6 +49,7 @@ else:
 HOME = pathlib.Path.home()
 CREDENTIALS = HOME / ".claude" / ".credentials.json"
 CONFIG = HOME / ".claude.json"
+SETTINGS = HOME / ".claude" / "settings.json"
 STORE = HOME / ".claude-accounts"
 SHARE = HOME / ".local" / "share" / "claude-switch"
 CHROME_HOST = SHARE / "chrome-host.py"
@@ -65,7 +68,14 @@ CACHES = ("managedSettingsNoticeSeenOrg", "additionalModelOptionsCache", "additi
           "autoCompactWindowsCache", "cachedUsageUtilization", "metricsStatusCache", "metricsStatusCacheByPrincipal",
           "githubWebConnectionStatusCache", "unusedLimitResetStatusCache", "startupPrefetchedAt")
 
-COMMANDS = ("list", "login", "rename", "refresh", "help")
+COMMANDS = ("list", "login", "key", "rename", "refresh", "help")
+
+# A gateway key account is the set of these entries in the env of ~/.claude/settings.json: a token there goes before the
+# claude.ai login, and the model names and the URL belong to the gateway. A switch replaces all of them, the other
+# entries of env stay.
+KEY_ENV = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+           "ANTHROPIC_SMALL_FAST_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+           "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_CUSTOM_HEADERS")
 
 # A stored access token with less than this left is refreshed. The task runs every 4 hours.
 REFRESH_AHEAD_MS = 270 * 60 * 1000
@@ -88,6 +98,8 @@ CREDMAN = ("Claude Code keeps its login in the Windows Credential Manager now (i
            "and claude-switch switches .credentials.json only.")
 
 LOCKS = []
+# The files this run is writing aside, which only it may remove.
+WRITING = []
 SIGNIN = None
 STUB = None
 DEAD = False
@@ -106,6 +118,16 @@ Usage:
                                          With ACCOUNT, a name or an email already here, it renews
                                          that one: claude.ai in Chrome goes to it first and the sign-in
                                          page asks for its email. OPTIONS go to claude auth login.
+  claude-switch key import NAME          Keep the gateway key now in ~/.claude/settings.json as the
+                                         account NAME: its token, URL and model names.
+  claude-switch key add NAME [--like KEY] [--api-key] [--base-url URL] [--env VAR=VALUE]...
+                                         Keep a gateway key as the account NAME. The token is asked
+                                         without echo, or read from the standard input. --like takes
+                                         the URL and model names of KEY, --api-key sends the token as
+                                         an Anthropic API key, x-api-key, rather than a bearer token.
+  claude-switch key renew NAME           Give the gateway key NAME a new token, asked the same way.
+  claude-switch key remove NAME          Forget the gateway key NAME, and take it out of
+                                         ~/.claude/settings.json when it is active.
   claude-switch rename NAME NEW_NAME     Rename an account.
   claude-switch refresh [--force]        Refresh the login of the accounts that are not active.
                                          The claude-switch-refresh task runs it at logon and every
@@ -119,11 +141,16 @@ follows it as well: an open Desktop is restarted when you answer yes in a termin
 server (claude remote-control) is stopped when you answer yes, so what keeps it running starts it
 again on the new account.
 
+A switch to a gateway key puts its entries in the env of ~/.claude/settings.json, a switch to a
+claude.ai account empties them again, which running sessions follow too. claude.ai in Chrome and
+Claude Desktop stay on their account.
+
 A sign-in lasts about 28 days, and only a new sign-in moves its end. From 7 days before, list, the
 prompt and a switch say when it ends, with the claude-switch login that renews it.
 
 Don't use /logout on an account you want to keep: it revokes the login saved here too.
-To forget an account, remove its file in ~/.claude-accounts.
+To forget an account, remove its file in ~/.claude-accounts, or a gateway key with claude-switch key
+remove NAME.
 """
 
 
@@ -300,7 +327,8 @@ def holder_of_live(file):
     live = fingerprint(CREDENTIALS, False)
     if live is None:
         return None
-    return next((other for other in accounts() if other != file and fingerprint(other, True) == live), None)
+    return next((other for other in accounts()
+                 if other != file and not is_key(other) and fingerprint(other, True) == live), None)
 
 
 def save_live():
@@ -344,11 +372,16 @@ def plan_of(data, login):
 
 
 def read_account(file):
-    """name, email, plan, ends (the date the sign-in ends or "signed out") and label of an account file."""
+    """name, email, plan, ends (the date the sign-in ends or "signed out") and label of an account file. A gateway key
+    shows its URL as the email and key as the plan."""
     data = load(file)
     login = dig(data, "login", "claudeAiOauth")
     name = dig(data, "name")
     name = name if isinstance(name, str) else ""
+    if dig(data, "kind") == "key":
+        url = alt(dig(data, "env", "ANTHROPIC_BASE_URL"), "gateway key")
+        url = url if isinstance(url, str) else json.dumps(url)
+        return types.SimpleNamespace(data=data, name=name, email=url, plan="key", ends="-", label=name or url)
     email = dig(data, "oauthAccount", "emailAddress")
     email = email if isinstance(email, str) else ""
     ends = "signed out" if is_dead(data) else local_date(alt(dig(login, "refreshTokenExpiresAt"), 0))
@@ -399,6 +432,404 @@ def set_name(file, name):
     data = load(file)
     data["name"] = name
     save(file, data)
+
+
+def is_key(file):
+    """True when FILE is a gateway key account."""
+    return dig(load_or_none(file), "kind") == "key"
+
+
+def filled(value):
+    """jq's VALUE | length > 0: null and false are empty, a number counts by its size."""
+    if value is None or isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return abs(value) > 0
+    return len(value) > 0
+
+
+def key_set(env):
+    """The gateway entries of ENV that hold a value. claude takes an empty one as unset, and a switch leaves "" in place
+    of an entry it takes out: a running session takes in an entry that changes, but keeps one that is gone."""
+    if not isinstance(env, dict):
+        return {}
+    return {key: value for key, value in env.items() if key in KEY_ENV and value != ""}
+
+
+def key_token(entries):
+    """After key_set: the token, which claude takes before the claude.ai login."""
+    return alt(entries.get("ANTHROPIC_AUTH_TOKEN"), alt(entries.get("ANTHROPIC_API_KEY"), ""))
+
+
+def key_credential(entries):
+    """After key_set: what a gateway knows its key by, the token or else the headers of a gateway that takes the key
+    there."""
+    return alt(entries.get("ANTHROPIC_AUTH_TOKEN"),
+               alt(entries.get("ANTHROPIC_API_KEY"), alt(entries.get("ANTHROPIC_CUSTOM_HEADERS"), "")))
+
+
+def settings_data():
+    """settings.json, {} when it is missing or empty, None when it can't be read as a JSON object."""
+    try:
+        if not SETTINGS.exists() or SETTINGS.stat().st_size == 0:
+            return {}
+        data = load(SETTINGS)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def settings_env():
+    """The env of settings.json, {} when there is none to read."""
+    env = alt(dig(settings_data(), "env"), {})
+    return env if isinstance(env, dict) else {}
+
+
+def key_in_settings(credential=False):
+    """True when the env of settings.json holds a gateway token, or with CREDENTIAL what a gateway knows its key by.
+    settings.json may be missing or empty."""
+    entries = key_set(settings_env())
+    return filled(key_credential(entries) if credential else key_token(entries))
+
+
+def live_key():
+    """The key account whose gateway entries are those in the env of settings.json, as (STATUS, FILE). A key is known by
+    its credential, then by its URL, then by the rest, so entries changed by hand still name it, see save_live_key.
+    STATUS is 0 with the file of that key, 1 when no key is there, 2 when the token there is kept by no account, or by
+    several that can't be told apart. Headers without a token are 1: claude takes no key from them before the login, and
+    a proxy in front of claude.ai may want headers too. Tokens are compared here, never printed."""
+    if not key_in_settings(credential=True):
+        return 1, None
+    live = key_set(settings_env())
+    best, found = 0, []
+    for file in accounts():
+        data = load_or_none(file)
+        if dig(data, "kind") != "key":
+            continue
+        key = key_set(dig(data, "env"))
+        if key_credential(key) != key_credential(live):
+            continue
+        score = 3 if key == live else 2 if key.get("ANTHROPIC_BASE_URL") == live.get("ANTHROPIC_BASE_URL") else 1
+        if score > best:
+            best, found = score, [file]
+        elif score == best:
+            found.append(file)
+    if len(found) == 1:
+        return 0, found[0]
+    return (2, None) if key_in_settings() else (1, None)
+
+
+def save_live_key():
+    """Gateway entries changed by hand in settings.json belong to the active key, as a rotated login belongs to its
+    account, so they're saved to it before anything replaces them."""
+    status, file = live_key()
+    if status:
+        return
+    data = load(file)
+    live = key_set(settings_env())
+    if key_set(dig(data, "env")) != live:
+        data["env"] = live
+        save(file, data)
+
+
+def active_file():
+    """The account the next session starts on: a gateway key before the claude.ai login, as claude chooses, and None when
+    that key is kept by no account."""
+    status, file = live_key()
+    if status == 0:
+        return file
+    return live_file() if status == 1 else None
+
+
+def require_kept_key():
+    """A switch replaces the token in settings.json, so one no account keeps stops it."""
+    if live_key()[0] == 2:
+        die("~/.claude/settings.json holds a gateway key no account keeps, nothing changed. Keep it with: "
+            "claude-switch key import NAME. To forget it, remove it after that with: claude-switch key remove NAME")
+
+
+def settings_target():
+    """settings.json itself, behind the symbolic link a dotfiles manager may keep in its place."""
+    return pathlib.Path(os.path.realpath(SETTINGS))
+
+
+def folder_writable(folder):
+    """True when this user can make a file in FOLDER. Windows ignores the read-only attribute of a folder, and an ACL that
+    denies writing shows only when a file is made, so one is made there and removed. Not with tempfile: it takes the
+    access denied of Windows for a name already used and tries other names without end."""
+    if not WINDOWS:
+        return os.access(folder, os.W_OK)
+    for _ in range(3):
+        probe = pathlib.Path(folder) / f".claude-switch.{os.getpid()}.{os.urandom(6).hex()}"
+        try:
+            os.close(os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+        except FileExistsError:
+            continue
+        except OSError:
+            return False
+        with contextlib.suppress(OSError):
+            os.remove(probe)
+        return True
+    return False
+
+
+def require_writable_settings():
+    """Stops a switch before anything changes when settings.json can't be written aside, in a read-only store a dotfiles
+    manager links it to for instance. Windows can't rename a file over one marked read-only either."""
+    target = settings_target()
+    if not folder_writable(target.parent):
+        die(f"~/.claude/settings.json is {target}, in a folder this user can't write, nothing changed.")
+    if WINDOWS and target.is_file() and not os.access(target, os.W_OK):
+        die(f"~/.claude/settings.json is {target}, which is read-only, nothing changed. Clear that with: "
+            f"attrib -r {quote(str(target))}")
+
+
+def kept_owner(target, path):
+    """Gives PATH the mode, owner and group of TARGET, False when this user can't. Windows has none of them: a file
+    renamed into place keeps the ACL it was made with, which is its folder's, as .claude.json gets at a switch."""
+    if WINDOWS:
+        return True
+    status = target.stat()
+    try:
+        os.chmod(path, stat.S_IMODE(status.st_mode))
+        os.chown(path, status.st_uid, status.st_gid)
+    except OSError:
+        return False
+    return True
+
+
+def set_key_env(file=None):
+    """Puts the entries of the key account FILE in the env of settings.json in place of the gateway entries there, or
+    only empties those without FILE: an entry taken out stays as "", which claude takes as unset, so running sessions
+    leave it too. The rest of the file stays, and a missing or empty one is taken as {}. It's written aside and renamed,
+    since running sessions read it at any moment, with the mode, owner and group it had. The token never goes on a
+    command line. A session keeps the ANTHROPIC_MODEL it started on, which is said."""
+    require_writable_settings()
+    target = settings_target()
+    try:
+        settings = load(target) if target.is_file() and target.stat().st_size > 0 else {}
+    except (OSError, ValueError):
+        settings = None
+    current = alt(dig(settings, "env"), {}) if isinstance(settings, dict) else None
+    if not isinstance(current, dict):
+        die("~/.claude/settings.json can't be read as JSON, nothing changed.")
+    model = key_set(current).get("ANTHROPIC_MODEL")
+    account = alt(dig(load(file), "env"), {}) if file is not None else {}
+    account = account if isinstance(account, dict) else {}
+    env = {key: "" if key in KEY_ENV else value for key, value in current.items()}
+    env.update(account)
+    if env:
+        settings["env"] = env
+    else:
+        settings.pop("env", None)
+    aside = pathlib.Path(f"{target}.switch")
+    WRITING[:] = [aside]
+    write_private(aside, dumps(settings))
+    if not target.exists() or kept_owner(target, aside):
+        replace(aside, target)
+    else:
+        # An owner or a group this user can't give a file of its own: written in place, which keeps them.
+        with open(target, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(aside.read_text(encoding="utf-8"))
+        aside.unlink(missing_ok=True)
+    WRITING.clear()
+    if model and model != key_set(account).get("ANTHROPIC_MODEL"):
+        warn(f"A running session that started on the model {model} keeps it: /model in it picks another.")
+
+
+def switch_to_key(file, account):
+    require_kept_key()
+    if live_key()[1] == file:
+        print(f"Already on {account.label}.")
+        return
+    set_key_env(file)
+    warn_environment(file)
+    remind_overrides(file)
+    print(f"Switched to {account.label}, a gateway key. claude.ai in Chrome and Claude Desktop stay on their account.")
+
+
+def key_usage():
+    die("Usage: claude-switch key import NAME, key add NAME [--like KEY] [--api-key] [--base-url URL] "
+        "[--env VAR=VALUE]..., key renew NAME or key remove NAME")
+
+
+def read_token(label):
+    """A token asked without echo, or read from the standard input. The store is unlocked while someone types it. Windows
+    PowerShell can put a BOM before what it pipes, which is no part of a token."""
+    unlock_store()
+    token = ""
+    try:
+        if sys.stdin is not None and sys.stdin.isatty():
+            # TODO(windows): type a key at this prompt in Windows Terminal, with PowerShell and with cmd.
+            token = getpass.getpass(f"Gateway key for {label}: ")
+        elif sys.stdin is not None:
+            token = sys.stdin.buffer.readline().decode("utf-8-sig", errors="replace")
+    except EOFError:
+        pass
+    except KeyboardInterrupt:
+        sys.exit(143)
+    lock_store()
+    token = token.strip()
+    if not token:
+        die("No key given, nothing changed.")
+    return token
+
+
+def key_twin(data, replaced=None):
+    """The key account with the same gateway entries as DATA, other than REPLACED: no switch could tell them apart."""
+    entries = key_set(dig(data, "env"))
+    for other in accounts():
+        found = load_or_none(other)
+        if other != replaced and dig(found, "kind") == "key" and key_set(dig(found, "env")) == entries:
+            return other
+    return None
+
+
+def store_key(file, data):
+    """Puts DATA in the key account FILE, unless another account is the same key."""
+    twin = key_twin(data, file)
+    if twin is not None:
+        die(f"The same gateway key is already kept as {read_account(twin).label}, nothing changed.")
+    make_store()
+    save(file, data)
+
+
+def key_file(name):
+    return STORE / ("key_" + re.sub(r"[^\w@.-]", "_", name) + ".json")
+
+
+def key_new(action, name, options):
+    """Keeps a gateway key as the account NAME: the one in settings.json (import), or a token asked without echo or read
+    from the standard input (add)."""
+    problem = name_problem(name)
+    if problem is not None:
+        die(problem)
+    file = key_file(name)
+    if file.exists():
+        die(f"Another account is kept as {file.name}, choose another name.")
+    if action == "import":
+        if options:
+            key_usage()
+        if not key_in_settings(credential=True):
+            die("The env of ~/.claude/settings.json holds no gateway key.")
+        status, held = live_key()
+        if status == 0:
+            die(f"The gateway key in ~/.claude/settings.json is already kept as {read_account(held).label}.")
+        data = {"kind": "key", "name": name, "env": key_set(settings_env())}
+    elif action == "add":
+        like = like_name = None
+        base, api, extra = "", False, []
+        while options:
+            if options[0] == "--api-key":
+                api = True
+                options = options[1:]
+                continue
+            if len(options) < 2:
+                key_usage()
+            option, value = options[:2]
+            if option == "--like":
+                like, like_name = require_account(value), value
+                if not is_key(like):
+                    die(f"{value} is a claude.ai account, --like takes a gateway key.")
+            elif option == "--base-url":
+                base = value
+            elif option == "--env":
+                var, equals, setting = value.partition("=")
+                if not equals or not setting:
+                    die("--env takes VAR=VALUE.")
+                if var in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"):
+                    die("The token is asked, never given on the command line.")
+                if var not in KEY_ENV:
+                    die(f"{var} is not an entry of a gateway key: {', '.join(KEY_ENV)}")
+                extra.append((var, setting))
+            else:
+                key_usage()
+            options = options[2:]
+        token = read_token(name)
+        # The store was unlocked while the token was typed.
+        problem = name_problem(name)
+        if problem is not None:
+            die(problem)
+        if file.exists():
+            die(f"Another account is kept as {file.name}, choose another name.")
+        if like is not None and not like.is_file():
+            die(f"{like_name} is gone, nothing changed.")
+        like_env = key_set(dig(load(like), "env")) if like is not None else {}
+        # The token goes in the variable of the key it is like: a gateway that wants x-api-key refuses a bearer token.
+        var = ("ANTHROPIC_API_KEY" if api or (like_env.get("ANTHROPIC_API_KEY") is not None
+                                              and like_env.get("ANTHROPIC_AUTH_TOKEN") is None)
+               else "ANTHROPIC_AUTH_TOKEN")
+        env = {key: value for key, value in like_env.items() if key not in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY")}
+        if base:
+            env["ANTHROPIC_BASE_URL"] = base
+        env[var] = token
+        env.update(extra)
+        data = {"kind": "key", "name": name, "env": env}
+    else:
+        key_usage()
+    store_key(file, data)
+    print(f"Kept the gateway key {name}. Switch to it with: claude-switch {quote(name)}")
+
+
+def key_renew(who):
+    """A new token for the gateway key WHO, in the variable its token is in. Its URL and model names stay, and
+    settings.json takes the new token too when it is the active key."""
+    file = require_account(who)
+    if not is_key(file):
+        die(f"{who} is a claude.ai account, renew it with: claude-switch login {quote(who)}")
+    account = read_account(file)
+    if not filled(key_token(key_set(dig(account.data, "env")))):
+        die(f"{account.label} has no token, its key is in its headers. Keep new headers with: "
+            "claude-switch key import NAME")
+    token = read_token(account.label)
+    # The store was unlocked while the token was typed.
+    if not file.is_file():
+        die(f"{account.label} is gone, nothing changed.")
+    active = live_key()[1] == file
+    data = load(file)
+    env = data.get("env") if isinstance(data.get("env"), dict) else {}
+    env["ANTHROPIC_AUTH_TOKEN" if key_set(env).get("ANTHROPIC_AUTH_TOKEN") is not None else "ANTHROPIC_API_KEY"] = token
+    data["env"] = env
+    store_key(file, data)
+    if active:
+        set_key_env(file)
+        print(f"Renewed {account.label}. Running sessions take the new token at their next request.")
+    else:
+        print(f"Renewed the gateway key {account.label}.")
+
+
+def key_remove(who):
+    """Forgets the gateway key WHO. The active key is emptied in settings.json first, as on a switch to the claude.ai
+    login."""
+    file = require_account(who)
+    if not is_key(file):
+        die(f"{who} is a claude.ai account. To forget it, remove ~/.claude-accounts/{file.name}")
+    account = read_account(file)
+    if live_key()[1] == file:
+        set_key_env()
+        file.unlink(missing_ok=True)
+        print(f"Removed the gateway key {account.label}, and emptied its entries in ~/.claude/settings.json.")
+    else:
+        file.unlink(missing_ok=True)
+        print(f"Removed the gateway key {account.label}.")
+
+
+def cmd_key(arguments):
+    """Keeps, renews or forgets a gateway key account."""
+    if len(arguments) < 2:
+        key_usage()
+    action, name, options = arguments[0], arguments[1].strip(), arguments[2:]
+    if action in ("import", "add"):
+        key_new(action, name, options)
+    elif action in ("renew", "remove"):
+        if options:
+            key_usage()
+        if action == "renew":
+            key_renew(name)
+        else:
+            key_remove(name)
+    else:
+        key_usage()
 
 
 def try_lock(handle):
@@ -488,6 +919,7 @@ def apply_account(file):
     for key in CACHES:
         config.pop(key, None)
     config["oauthAccount"] = dig(account, "oauthAccount")
+    WRITING[:] = [pathlib.Path(f"{CREDENTIALS}.switch"), pathlib.Path(f"{CONFIG}.switch")]
     write_private(f"{CREDENTIALS}.switch", dumps(credentials))
     write_private(f"{CONFIG}.switch", dumps(config))
     # A stop between the renames would leave the login of one account under the name of the other, so it waits
@@ -495,6 +927,7 @@ def apply_account(file):
     with stops_deferred():
         replace(f"{CREDENTIALS}.switch", CREDENTIALS)
         replace(f"{CONFIG}.switch", CONFIG)
+        WRITING.clear()
 
 
 def check_login_keys():
@@ -652,16 +1085,72 @@ def credential_manager():
     return WINDOWS and dig(load_or_none(CONFIG), "cachedGrowthBookFeatures", "tengu_windows_credman") is True
 
 
-def warn_environment():
-    for var in ("CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
-        if os.environ.get(var):
-            warn(f"{var} is set in this shell, a claude started from here doesn't follow the switch.")
+def warn_environment(file):
+    """The variables of this shell that a claude started from it takes before the account FILE. claude ranks a cloud
+    provider, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY, then CLAUDE_CODE_OAUTH_TOKEN before the claude.ai login, and what
+    settings.json sets, "" too, goes before the shell. CLAUDE_CONFIG_DIR takes another folder altogether."""
+    if os.environ.get("CLAUDE_CONFIG_DIR"):
+        warn("CLAUDE_CONFIG_DIR is set in this shell, a claude started from here doesn't follow the switch.")
+    account = alt(dig(load_or_none(file), "env"), {})
+    settings = settings_env()
+    for var in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+        # The token of a key, and what claude ranks after it, doesn't count.
+        if isinstance(account, dict) and filled(alt(account.get(var), "")):
+            break
+        if os.environ.get(var, "").lower() in ("", "0", "false", "no", "off"):
+            continue
+        if var in settings:
+            continue
+        warn(f"{var} is set in this shell, a claude started from here doesn't follow the switch.")
+
+
+def as_text(value):
+    """jq's tostring: a string as it is, anything else as JSON."""
+    return value if isinstance(value, str) else json.dumps(value)
+
+
+def remind_overrides(file):
+    """What settings.json sets that claude takes before the account FILE, ranked as claude ranks them: a cloud provider
+    before everything, then a gateway token, then apiKeyHelper, CLAUDE_CODE_OAUTH_TOKEN and a profile named in
+    ANTHROPIC_PROFILE, then the claude.ai login. A gateway key that sends only headers ranks with the login."""
+    account = read_account(file)
+    rank = 7
+    if is_key(file):
+        rank = 2 if key_token(key_set(dig(account.data, "env"))) != "" else 7
+    settings = settings_data()
+    variables = alt(dig(settings, "env"), {})
+    if settings is None or not isinstance(variables, dict):
+        return
+    found = [(1, var) for var in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
+             if as_text(alt(variables.get(var), "")).lower() not in ("", "0", "false", "no", "off")]
+    if alt(settings.get("apiKeyHelper"), "") != "":
+        found.append((4, "apiKeyHelper"))
+    found += [(at, var) for at, var in ((5, "CLAUDE_CODE_OAUTH_TOKEN"), (6, "ANTHROPIC_PROFILE"))
+              if alt(variables.get(var), "") != ""]
+    override = next((name for at, name in found if at < rank), None)
+    if override:
+        warn(f"~/.claude/settings.json sets {override}, which claude uses before {account.label}.")
 
 
 def switch_to(file):
     account = read_account(file)
+    if is_key(file):
+        switch_to_key(file, account)
+        return
+    require_kept_key()
+    # The active key goes out of settings.json once the login is in place.
+    key = live_key()[1]
+    if key is not None:
+        require_writable_settings()
     if file == live_file():
-        print(f"Already on {account.label}.")
+        if key is not None:
+            set_key_env()
+            warn_environment(file)
+            remind_overrides(file)
+            print(f"Switched to {account.label}.")
+        else:
+            print(f"Already on {account.label}.")
         web_switch(file)
         desktop_switch(file, account.label)
         return
@@ -677,7 +1166,10 @@ def switch_to(file):
     release_locks()
     if live_file() != file:
         die("A running session wrote over the switch. Run it again.")
-    warn_environment()
+    if key is not None:
+        set_key_env()
+    warn_environment(file)
+    remind_overrides(file)
     check_login_keys()
     print(f"Switched to {account.label}.")
     web_switch(file)
@@ -692,6 +1184,9 @@ def cmd_login(arguments):
     wanted = wanted_email = None
     if arguments and not arguments[0].startswith("-"):
         wanted = require_account(arguments[0])
+        if is_key(wanted):
+            die(f"{arguments[0]} is a gateway key, it has no sign-in. Give it a new token with: "
+                f"claude-switch key renew {quote(arguments[0])}")
         wanted_email = read_account(wanted).email
         # The sign-in page uses the claude.ai session of the browser, so that session goes first. It comes back
         # however the sign-in ends.
@@ -939,6 +1434,12 @@ def signin_reminder(file, ahead):
     return f"The sign-in of {account.label} ends on {account.ends}, {days_to(ends)}. Sign in again before then: {hint}"
 
 
+def remind_unkept_key():
+    if live_key()[0] == 2:
+        warn("~/.claude/settings.json holds a gateway key no account keeps, it goes before the claude.ai login. "
+             "Keep it with: claude-switch key import NAME")
+
+
 def remind_signins():
     """Only a new sign-in moves the date a sign-in ends, so that date is reminded of ahead of time."""
     for file in accounts():
@@ -1001,6 +1502,9 @@ def cmd_refresh(arguments):
     tidy_signins()
     unlock_store()
     for file in accounts():
+        # A gateway key has no login to refresh.
+        if is_key(file):
+            continue
         lock_store()
         # The live login belongs to the running sessions, its stored copy is older than theirs.
         if file != live_file():
@@ -1011,12 +1515,15 @@ def cmd_refresh(arguments):
 
 
 def cmd_list():
-    live = live_file()
+    live = active_file()
     print(f"  {'ACCOUNT':<28} {'EMAIL':<36} {'PLAN':<6} UNTIL")
     for file in accounts():
         account = read_account(file)
         marker = "*" if file == live else " "
         print(f"{marker} {account.label:<28} {account.email:<36} {account.plan:<6} {account.ends}")
+    remind_unkept_key()
+    if live is not None:
+        remind_overrides(live)
     remind_signins()
 
 
@@ -1054,16 +1561,22 @@ def cmd_prompt():
     while True:
         lock_store()
         save_live()
+        save_live_key()
         unlock_store()
-        live = live_file()
+        live = active_file()
         files = accounts()
         print("\nClaude Code accounts\n")
         for row, file in enumerate(files, 1):
             account = read_account(file)
             shown = account.label if account.label == account.email else f"{account.label}  {account.email}"
             when = account.ends if account.ends == "signed out" else f"until {account.ends}"
+            if account.plan == "key":
+                when = ""
             here = "active" if file == live else ""
             print(f"  {row:2d}) {shown:<56} {account.plan:<6} {when:<17} {here}")
+        remind_unkept_key()
+        if live is not None:
+            remind_overrides(live)
         remind_signins()
         print("\n   a) Add an account\n   r) Rename an account\n   q) Quit\n")
         try:
@@ -1102,9 +1615,14 @@ def main(arguments):
         warn(CREDMAN)
         cmd_list()
         return 0
+    # What a switch killed on the way left aside. No other run writes there while the store is locked.
+    for path in (f"{CREDENTIALS}.switch", f"{CONFIG}.switch", f"{settings_target()}.switch"):
+        with contextlib.suppress(OSError):
+            os.remove(path)
     recover_refreshes()
     repair_live()
     save_live()
+    save_live_key()
     if first == "":
         if terminal():
             unlock_store()
@@ -1119,6 +1637,8 @@ def main(arguments):
     elif first == "refresh":
         unlock_store()
         return cmd_refresh(arguments[1:])
+    elif first == "key":
+        cmd_key(arguments[1:])
     elif first == "rename":
         if len(arguments) != 3:
             die("Usage: claude-switch rename NAME NEW_NAME")
@@ -1143,9 +1663,11 @@ def cleanup():
     if SIGNIN is not None:
         shutil.rmtree(SIGNIN, ignore_errors=True)
         SIGNIN = None
-    for path in (f"{CREDENTIALS}.switch", f"{CONFIG}.switch"):
+    # Another run may be writing its own under the same names, so only what this one was writing.
+    for path in WRITING:
         with contextlib.suppress(OSError):
             os.remove(path)
+    WRITING.clear()
     if WEB_AWAY:
         with contextlib.suppress(Exception):
             web_back()
