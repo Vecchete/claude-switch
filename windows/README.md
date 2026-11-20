@@ -5,7 +5,7 @@ few things were never run there for real yet, see [Status](#status) and
 [Not verified yet](#not-verified-yet).
 
 The port follows `bin/claude-switch`, `share/chrome-host.py`, `share/desktop.py` and `share/usage.py` as of
-commit d1bf78c, [gateway keys](../docs/gateway-keys.md) and [automatic switching](../docs/auto.md) included. When the Linux version changes, the port changes with it:
+commit 846289c, [gateway keys](../docs/gateway-keys.md) and [automatic switching](../docs/auto.md) included. When the Linux version changes, the port changes with it:
 `windows/tests/run.sh` says on Linux whether it still behaves the same, and `windows\tests\run.ps1` checks
 on Windows what only Windows does.
 
@@ -98,8 +98,9 @@ PowerShell does what only PowerShell does: the install, the Tab completion and t
 - Desktop is closed differently. Its windows are asked to close first, and after 5 seconds its process
   tree ends, since it stays in the tray otherwise. The helpers that outlive it go too, and the switch
   waits until the files of Desktop are free.
-- `desktop.py` never quits the Desktop that runs it, through one of its Code sessions or its terminal:
-  `switch` exits 6 there and says how to bring Desktop along.
+- `desktop.py` never quits the Desktop that runs it, through one of its Code sessions or its terminal, as on
+  Linux: `switch` exits 6 there and says how to bring Desktop along. On Windows any Desktop among the parents
+  of the process counts, where Linux looks for the Desktop that holds the folder.
 - Claude Desktop keeps one storage of its window for every account (Local Storage, Session Storage,
   IndexedDB, WebStorage), and settings files beside it. Much of what they hold is named after the account:
   the sections and groups of the sidebar, the order of the projects, the presets of the Code tab and their
@@ -175,7 +176,9 @@ PowerShell does what only PowerShell does: the install, the Tab completion and t
   the moment its `procStart` says. Claude Code writes the creation time of the process there on Windows, in
   units of 100 ns since 1601, where Linux has the start time `/proc` gives.
 - A hook of a Code session of Claude Desktop runs inside Desktop, so an automatic switch there leaves Desktop
-  on its account, as a switch typed in such a session does. The watch runs outside Desktop and restarts it.
+  on its account, as a switch typed in such a session does, and the notification says how to bring it along.
+  That session isn't woken: it goes on with the login of Desktop, which only a restart of Desktop changes.
+  The watch runs outside Desktop and restarts it.
 - In a hook, what the helpers of claude-switch say goes to `.auto.log` too. Windows hands a program its
   standard handles rather than the files Python writes to, so claude-switch gives them the log.
 - `usage.py` reads JSON as UTF-8 whatever the code page of Windows, and writes what it says in UTF-8, so a

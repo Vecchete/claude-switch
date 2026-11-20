@@ -46,10 +46,13 @@ MUTANTS = [
      '        if folder and "--type=" in command:\n'),
     # Closing Desktop.
     ("inside-not-refused", "desktop", "desktop",
-     "    if inside_desktop():\n        raise Refused(INSIDE,", "    if False:\n        raise Refused(INSIDE,"),
+     "    if inside_desktop():\n        raise inside_refusal(who)\n    raise Refused(RUNNING,",
+     "    if False:\n        raise inside_refusal(who)\n    raise Refused(RUNNING,"),
     ("quit-from-inside", "desktop", "desktop",
-     '    if inside_desktop():\n        print("Claude Desktop runs this terminal, quit it by hand.", file=sys.stderr)\n'
+     '    if inside_desktop():\n        print("This runs inside Claude Desktop: close it by hand.", file=sys.stderr)\n'
      "        return 1\n", ""),
+    ("inside-never-said", "desktop", "desktop",
+     "            return 0 if inside_desktop() else 1\n", "            return 1\n"),
     ("forced-at-once", "desktop", "desktop",
      "    if end_process(pid, force=False):\n        gone_within(min(seconds, 5))\n", ""),
     ("tray-not-forced", "desktop", "desktop",
@@ -348,6 +351,19 @@ MUTANTS = [
      "    store_key(file, data)\n"),
     ("auto-list-without-left", "switch", "auto", "    live = active_file()\n    read_left()\n", "    live = active_file()\n"),
     ("auto-desktop-asks", "switch", "auto", '    if AUTO:\n        answer = "yes"\n', '    if False:\n        answer = "yes"\n'),
+    # Claude Desktop runs the hook of one of its Code sessions.
+    ("auto-desktop-kept-unsaid", "switch", "auto", "    if status == 6:\n        DESKTOP_KEPT = True\n", ""),
+    ("auto-desktop-session-woken", "switch", "auto",
+     '    if helper is not None and run(helper + ["inside"]) == 0:\n', "    if False:\n"),
+    ("auto-log-not-cut-by-the-hook", "switch", "auto", "    make_store()\n    trim_log()\n    HOOK_ERR = sys.stderr\n",
+     "    make_store()\n    HOOK_ERR = sys.stderr\n"),
+    ("auto-log-not-cut-by-the-watch", "switch", "auto", "    trim_log()\n    route()\n", "    route()\n"),
+    ("auto-log-cut-after-the-hook-opens-it", "switch", "auto",
+     "    trim_log()\n    HOOK_ERR = sys.stderr\n    LOGGING = open(AUTO_LOG, \"a\", encoding=\"utf-8\", errors=\"replace\", "
+     "buffering=1)\n",
+     "    HOOK_ERR = sys.stderr\n    LOGGING = open(AUTO_LOG, \"a\", encoding=\"utf-8\", errors=\"replace\", buffering=1)\n"
+     "    trim_log()\n"),
+    ("auto-hook-program-unknown", "switch", "auto", "for part in [command, *arguments]", "for part in arguments"),
     # What only Windows does in usage.py.
     ("usage-session-by-pid-alone", "usage", "auto",
      "        if running is not None and (started is None or running == str(started)):\n", "        if running is not None:\n"),

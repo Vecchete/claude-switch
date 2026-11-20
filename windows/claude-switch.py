@@ -139,6 +139,8 @@ WEB_AWAY = False
 STORE_LOCK = None
 # Set while claude-switch switches on its own: Desktop restarts without a question.
 AUTO = False
+# Set when Claude Desktop stayed on its account because it runs this, one of its Code sessions for instance.
+DESKTOP_KEPT = False
 # The account the last route went to, and why, for the hook.
 ROUTED_TO = ""
 ROUTED_WHY = ""
@@ -1114,9 +1116,15 @@ def desktop_switch(file, label):
     """Claude Desktop follows the switch, when it is installed. It must be closed for that, so an open one is
     restarted: on a switch claude-switch makes by itself, and on one typed in a terminal unless it says no. A Desktop
     that runs this, through one of its Code sessions, stays on its account: desktop.py says so with 6, not 3."""
+    global DESKTOP_KEPT
     helper = helper_command(DESKTOP_HELPER)
     account = dig(load_or_none(file), "oauthAccount", "accountUuid") if helper else None
-    if not account or run(helper + ["switch", account]) != 3:
+    if not account:
+        return
+    status = run(helper + ["switch", account])
+    if status == 6:
+        DESKTOP_KEPT = True
+    if status != 3:
         return
     answer = "no"
     if AUTO:
@@ -1665,7 +1673,7 @@ def hook_handler():
 
 def own_hook(entry):
     """True for a StopFailure entry that runs claude-switch hook, whatever path it was installed at: a command line that
-    ends in hook, or a program whose arguments do."""
+    ends in hook, or a program whose arguments do, with claude-switch in the program or its arguments."""
     hooks = entry.get("hooks") if isinstance(entry, dict) else None
     for hook in hooks if isinstance(hooks, list) else []:
         command = hook.get("command") if isinstance(hook, dict) else None
@@ -1673,7 +1681,7 @@ def own_hook(entry):
         if isinstance(command, str) and command.endswith(" hook") and "claude-switch" in command:
             return True
         if isinstance(arguments, list) and arguments[-1:] == ["hook"] \
-                and any("claude-switch" in str(part) for part in arguments):
+                and any(isinstance(part, str) and "claude-switch" in part for part in [command, *arguments]):
             return True
     return False
 
@@ -1867,8 +1875,9 @@ def nothing_left():
     notify_once("nothing", "No Claude account has room", f"The first to have room again: {first}." if first else "")
 
 
-def rotate_log():
-    """The log of automatic switching keeps its last lines."""
+def trim_log():
+    """The log of automatic switching keeps its last 2000 lines once it passes 1 MB. Only before a run opens it: a run
+    that writes to it would go on writing to the file the trim replaces."""
     with contextlib.suppress(OSError):
         if AUTO_LOG.stat().st_size > 1048576:
             lines = AUTO_LOG.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
@@ -1900,10 +1909,9 @@ def to_log():
 def route():
     """Puts the machine on the best account that has room, when the active one isn't that account, and says so.
     ROUTED_TO and ROUTED_WHY tell where it went and why. False when no account has room."""
-    global AUTO, ROUTED_TO, ROUTED_WHY
+    global AUTO, DESKTOP_KEPT, ROUTED_TO, ROUTED_WHY
     ROUTED_TO = ROUTED_WHY = ""
-    if LOGGING is None:
-        rotate_log()
+    DESKTOP_KEPT = False
     active = active_file()
     files = accounts()
     # Younger than the 5 minutes between two runs of the task, so each run reads.
@@ -1934,7 +1942,9 @@ def route():
     finally:
         AUTO = False
     print(f"Switched to {ROUTED_TO}: {ROUTED_WHY}.")
-    notify(f"Switched to {ROUTED_TO}", f"{ROUTED_WHY}.")
+    kept = (f" Claude Desktop stays on its account: close it and run claude-switch {quote(ROUTED_TO)} to bring it "
+            "along.") if DESKTOP_KEPT else ""
+    notify(f"Switched to {ROUTED_TO}", f"{ROUTED_WHY}.{kept}")
     return True
 
 
@@ -1942,6 +1952,7 @@ def cmd_watch(arguments):
     """The task runs this every 5 minutes. Without automatic switching or an open session it never gets here."""
     if arguments:
         die("Usage: claude-switch watch")
+    trim_log()
     route()
 
 
@@ -2056,6 +2067,12 @@ def cmd_hook(arguments):
         if not route() or not ROUTED_TO:
             return 0
         message = f"claude-switch moved this machine to {ROUTED_TO}: {ROUTED_WHY}."
+    # A session of Claude Desktop goes on with the login of Desktop, which only a restart of Desktop changes, and that
+    # restart would end the session: woken, it would only meet the limit again.
+    helper = helper_command(DESKTOP_HELPER)
+    if helper is not None and run(helper + ["inside"]) == 0:
+        print("The session runs in Claude Desktop, which keeps its account until it restarts: it is not woken.")
+        return 0
     note_wake(session)
     print(f"{message} The request that failed can go out again now: carry on with the task where it stopped.",
           file=HOOK_ERR or sys.stderr, flush=True)
@@ -2066,7 +2083,7 @@ def start_hook_log():
     """Claude reads what the hook says: everything but its last sentence goes to the log."""
     global HOOK_ERR, LOGGING
     make_store()
-    rotate_log()
+    trim_log()
     HOOK_ERR = sys.stderr
     LOGGING = open(AUTO_LOG, "a", encoding="utf-8", errors="replace", buffering=1)
     sys.stdout = sys.stderr = LOGGING

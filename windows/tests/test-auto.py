@@ -148,7 +148,7 @@ try:
         executable(bin_ / "systemctl", '#!/bin/sh\nprintf "%s\\n" "$*" >> "$FAKE_STATE/watch"\n')
         executable(bin_ / "notify-send", '#!/bin/sh\nprintf "%s\\n" "$*" >> "$FAKE_STATE/notify"\n')
     # The Desktop helper logs what claude-switch asks of it, says something, and answers with the statuses
-    # FAKE_DESKTOP_SWITCH gives each switch in turn, "3,0" for instance.
+    # FAKE_DESKTOP_SWITCH gives each switch in turn, "3,0" for instance. FAKE_DESKTOP_INSIDE=0: Desktop runs the caller.
     executable(share / "desktop.py", f"#!{sys.executable}\n"
                "import os, pathlib, sys\n"
                "log = pathlib.Path(os.environ['FAKE_STATE']) / 'desktop'\n"
@@ -160,6 +160,8 @@ try:
                "    statuses = os.environ.get('FAKE_DESKTOP_SWITCH', '0').split(',')\n"
                "    status = statuses[0] if len(statuses) == 1 else statuses[count - 1] if count <= len(statuses) else '0'\n"
                "    sys.exit(int(status or 0))\n"
+               "if sys.argv[1] == 'inside':\n"
+               "    sys.exit(int(os.environ.get('FAKE_DESKTOP_INSIDE', '1')))\n"
                "sys.exit(int(os.environ.get('FAKE_DESKTOP_QUIT', '0')) if sys.argv[1] == 'quit' else 0)\n")
     shutil.copy2(USAGE_PY, share / "usage.py")
     (share / "usage.py").chmod(0o755)
@@ -389,8 +391,12 @@ try:
                                        re.MULTILINE) is not None)
     check("watch: a key leaves Desktop alone", log("desktop") == "")
     count = len(Server.requests)
+    # The log past 1 MB keeps its last lines.
+    (store / ".auto.log").write_text(("0" * 600 + "\n") * 2200, encoding="utf-8")
     result = run("watch")
     check("watch: on the best already, nothing to say", out(result) == "" and marked("gw"))
+    check("watch: a log past 1 MB keeps its last lines", sum(
+        line.startswith("0") for line in (store / ".auto.log").read_text(encoding="utf-8").splitlines()) == 2000)
     check("watch: a full week isn't read again before it resets", not requests_since(count, "U-token"))
     change_reading("key_gw", at=now() - 250000)
     count = len(Server.requests)
@@ -440,6 +446,8 @@ try:
     run("watch")
     check("hook setup: on Ultra", marked("ultra"))
     Server.answers[("/api/oauth/usage", "U-token")] = (200, week(100, now() + 2 * DAY))
+    # A log past 1 MB, cut before the hook writes to it.
+    (store / ".auto.log").write_text(("0" * 600 + "\n") * 2200, encoding="utf-8")
     old_switch()
     failed = now()
     result = hook({"session_id": "s1", "hook_event_name": "StopFailure", "error": "rate_limit",
@@ -455,6 +463,8 @@ try:
     check("hook: nothing on stdout", result.stdout == "")
     check("hook: claude-switch said the rest in its log",
           "Switched to gw, a gateway key" in (store / ".auto.log").read_text(encoding="utf-8"))
+    check("hook: a log past 1 MB keeps its last lines", sum(
+        line.startswith("0") for line in (store / ".auto.log").read_text(encoding="utf-8").splitlines()) == 2000)
     check("hook: a wake counted", len((store / ".woken" / "s1").read_text(encoding="utf-8").split()) == 1)
 
     # A second session failed before that switch: it only has to send its request again.
@@ -496,7 +506,7 @@ try:
                   FAKE_DESKTOP_SWITCH="3,0")
     check("no credit: refused", result.returncode == 2 and refused("key_api") and "api ran out of credit" in result.stderr)
     check("no credit: on to the plan with a window", live_access() == "A-token" and env_token() == "")
-    check("no credit: Desktop follows without a question", calls() == "switch acct-a|quit|switch acct-a|start|")
+    check("no credit: Desktop follows without a question", calls() == "switch acct-a|quit|switch acct-a|start|inside|")
     # Windows hands a program its standard handles, not the files Python writes to: what the helper said must be in the
     # log, not in what Claude reads.
     check("no credit: what the Desktop helper said is in the log only", result.stdout == ""
@@ -544,7 +554,29 @@ try:
     check("auto order: a kind twice is refused", result.returncode != 0 and "max is twice in the order." in out(result))
     run("auto", "order", "ultra", "key", "max")
 
-    # auto off: the hook and the watch go, the rest stays.
+    # A session of Claude Desktop meets the limit: the machine moves on, Desktop keeps its account, and the session isn't
+    # woken, since only a restart of Desktop, which would end it, gives it another login.
+    subprocess.run([sys.executable, "-I", str(share / "usage.py"), "refuse", str(store / "key_api.json"), "billing_error"],
+                   env=env, capture_output=True, timeout=120)
+    Server.answers[("/api/oauth/usage", "U-token")] = (200, week(100, now() + 2 * DAY))
+    old_switch()
+    (state / "desktop").unlink(missing_ok=True)
+    (state / "notify").unlink(missing_ok=True)
+    result = hook({"session_id": "s8", "error": "rate_limit", "last_assistant_message": "x"},
+                  FAKE_DESKTOP_SWITCH="6", FAKE_DESKTOP_INSIDE="0")
+    check("a session of Desktop: the machine moves on", marked("a@example.com"))
+    check("a session of Desktop: Desktop left alone", calls() == "switch acct-a|inside|")
+    check("a session of Desktop: not woken", result.returncode == 0 and result.stderr == ""
+          and "it is not woken" in (store / ".auto.log").read_text(encoding="utf-8"))
+    check("a session of Desktop: the notification says how to bring Desktop along",
+          "Claude Desktop stays on its account: close it and run claude-switch a@example.com to bring it along."
+          in log("notify"))
+
+    # auto off: the hook and the watch go, the rest stays, with a hook whose program is the claude-switch.
+    data = read(settings)
+    data["hooks"]["StopFailure"].append({"matcher": "rate_limit", "hooks": [
+        {"type": "command", "command": "C:\\old\\claude-switch\\pythonw.exe", "args": ["-I", "C:\\old\\run.py", "hook"]}]})
+    write(settings, data)
     run("auto", "off")
     check("auto off: the flag goes", not (store / ".auto").exists())
     check("auto off: only the hook of claude-switch goes",
@@ -557,8 +589,10 @@ try:
     before = live_access()
     result = hook({"session_id": "s7", "error": "rate_limit", "last_assistant_message": "x"})
     check("auto off: the hook does nothing", result.returncode == 0 and live_access() == before)
-    # Another account comes first now: a watch that ran would switch.
-    write(store / ".auto-order", "max ultra key\n")
+    # The Ultra has room again: a watch that ran would switch to it.
+    usage_file(U, refused=True).unlink(missing_ok=True)
+    Server.answers[("/api/oauth/usage", "U-token")] = (200, week(30, now() + 2 * DAY))
+    stale(U)
     result = run("watch")
     check("auto off: the watch does nothing", out(result) == "" and live_access() == before)
     run("auto", "off")

@@ -956,7 +956,10 @@ try:
     check("open: refused with 3", result.returncode == 3)
     result = m.run("switch", ACCOUNT_B, plan={"inside": True})
     check("open and running this switch: refused with 6, with how to bring it along",
-          result.returncode == 6 and "claude-switch b@example.com" in result.stderr)
+          result.returncode == 6 and "This runs inside Claude Desktop" in result.stderr
+          and "claude-switch b@example.com in a terminal" in result.stderr)
+    check("inside: 0 when Desktop runs this", m.run("inside", plan={"inside": True}).returncode == 0)
+    check("inside: 1 when it doesn't", m.run("inside", plan={"inside": False}).returncode == 1)
     database.kill()
     database.wait()
     check("open: nothing changed", (m.tree(m.desktop), m.tree(m.store)) == kept)
@@ -972,7 +975,8 @@ try:
                   "CommandLine": '"C:\\x\\Claude.exe"'}, helper]
     result = m.run("quit", "3", plan={"processes": processes, "inside": True, "end": dict(end, kills_on=[True])})
     check("quit from inside Desktop: refused, nothing ended",
-          result.returncode == 1 and "by hand" in result.stderr and m.calls() == [] and stand_in.poll() is None)
+          result.returncode == 1 and "This runs inside Claude Desktop: close it by hand." in result.stderr
+          and m.calls() == [] and stand_in.poll() is None)
 
     # A Desktop that stays in the tray when its windows close ends with its tree, then the helper left behind.
     result = m.run("quit", "3", plan={"processes": processes, "inside": False, "end": dict(end, kills_on=[True])})

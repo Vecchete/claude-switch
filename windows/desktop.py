@@ -41,9 +41,10 @@ Windows the window's storage of the account beside it), and only you can read th
     desktop.py quit [SECONDS]    close Desktop and wait until it is gone, 20 seconds at most
     desktop.py start             start Desktop, without the environment of the calling session, in a systemd
                                  scope of its own when the user's systemd runs
+    desktop.py inside            exit 0 when Desktop runs this, through one of its Code sessions for instance
 
-switch exits 3 when Desktop is open and on another account, 4 when its session has no name, and on Windows 6 when
-Desktop is open and runs this switch, through one of its Code sessions or its terminal.
+switch exits 3 when Desktop is open and on another account, 4 when its session has no name, 6 when Desktop
+runs this, through one of its Code sessions or its terminal, which closing it would end.
 """
 import base64
 import contextlib
@@ -53,6 +54,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -223,9 +225,24 @@ def running_on_windows():
 
 
 def inside_desktop():
-    """Windows: True when Claude Desktop runs this, through one of its Code sessions or its terminal. Closing Desktop
-    would then end this run before the switch is done."""
+    """True when Claude Desktop runs this, through one of its Code sessions or its terminal. Closing Desktop would
+    then end this run before the switch is done. On Windows any Desktop among the parents counts, elsewhere the one
+    that holds the folder."""
     if not WINDOWS:
+        desktop = running()
+        if desktop is None or desktop < 0:
+            return False
+        pid, seen = os.getpid(), set()
+        while pid > 1 and pid not in seen:
+            if pid == desktop:
+                return True
+            seen.add(pid)
+            try:
+                stat = pathlib.Path(f"/proc/{pid}/stat").read_text()
+            except OSError:
+                return False
+            # The name between parentheses can hold anything: the fields after the last ")" are the state and the parent.
+            pid = int(stat[stat.rindex(")") + 1:].split()[1])
         return False
     processes = {process.get("ProcessId"): process for process in windows_processes() or []}
     pid, seen = os.getpid(), set()
@@ -795,6 +812,8 @@ def switch(account):
     if current == account:
         return f"Claude Desktop is already on {who}."
     if running():
+        if inside_desktop():
+            raise inside_refusal(who)
         raise Refused(RUNNING, "Claude Desktop is open.")
     # Desktop writes config.json through a journal and replays a leftover one at its next start.
     if CONFIG.with_name("config.json.journal").exists():
@@ -815,8 +834,17 @@ def switch(account):
 
 
 def shell_word(text):
-    """TEXT as one word to type in PowerShell or cmd: as it is when nothing in it needs quotes, else in quotes."""
+    """TEXT as one word to type in a terminal: in PowerShell or cmd on Windows, as it is when nothing in it needs
+    quotes, else in quotes, and in a POSIX shell elsewhere."""
+    if not WINDOWS:
+        return shlex.quote(text)
     return text if re.fullmatch(r"[\w.:/=+-][\w@.:/=+-]*", text) else "'" + text.replace("'", "''") + "'"
+
+
+def inside_refusal(who):
+    """The refusal of a switch that Desktop runs itself: closing it would end the switch with it."""
+    return Refused(INSIDE, f"This runs inside Claude Desktop, so Desktop stays on its account. Close it and run "
+                           f"claude-switch {shell_word(who)} in a terminal to bring it along.")
 
 
 def open_on_windows(account, config, who):
@@ -825,8 +853,7 @@ def open_on_windows(account, config, who):
     if config.get(ACCOUNT) == account and any(config.get(key) for key in TOKENS):
         return f"Claude Desktop is already on {who}."
     if inside_desktop():
-        raise Refused(INSIDE, f"Claude Desktop runs this terminal, so it stays on its account. Quit it, then run "
-                              f"claude-switch {shell_word(who)} in another terminal to bring it along.")
+        raise inside_refusal(who)
     raise Refused(RUNNING, "Claude Desktop is open.")
 
 
@@ -856,6 +883,9 @@ def quit_desktop(seconds):
         print("Claude Desktop is open and its process can't be told, close it by hand." if WINDOWS
               else "Claude Desktop is open on another computer.", file=sys.stderr)
         return 1
+    if inside_desktop():
+        print("This runs inside Claude Desktop: close it by hand.", file=sys.stderr)
+        return 1
     if WINDOWS:
         return quit_on_windows(pid, seconds)
     os.kill(pid, signal.SIGTERM)
@@ -872,9 +902,6 @@ def quit_on_windows(pid, seconds):
     """taskkill without /F asks the windows of Desktop to close, and a Desktop that keeps running in the tray stays
     open (seen on the PC, 2026-10-16). So after 5 seconds its process ends with its tree, as the PC's earlier switcher
     ended it. Then the helpers that outlive it go, and its cookie database and web storage must be free."""
-    if inside_desktop():
-        print("Claude Desktop runs this terminal, quit it by hand.", file=sys.stderr)
-        return 1
     if end_process(pid, force=False):
         gone_within(min(seconds, 5))
     if lock_held():
@@ -980,6 +1007,8 @@ def main(arguments):
             return quit_desktop(float(arguments[1]) if len(arguments) == 2 else 20)
         if command == "start" and len(arguments) == 1:
             return start()
+        if command == "inside" and len(arguments) == 1:
+            return 0 if inside_desktop() else 1
     except Refused as refusal:
         print(refusal, file=sys.stderr)
         return refusal.status
