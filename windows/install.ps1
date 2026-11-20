@@ -11,8 +11,9 @@ Run it again after any change in the checkout: it copies what differs and leaves
 
 The places are the ones of the Linux version, under the user profile: ~\.local\bin\claude-switch.cmd next to
 claude.exe, and ~\.local\share\claude-switch for the rest. It also registers the Chrome host for this user, the
-claude-switch-refresh task and the Tab completion in the PowerShell profiles. The accounts, the saved sessions and
-every login stay in ~\.claude-accounts, never in this checkout.
+claude-switch-refresh task, the claude-switch-watch task of automatic switching and the Tab completion in the
+PowerShell profiles. The accounts, the saved sessions and every login stay in ~\.claude-accounts, never in this
+checkout.
 
 It needs Python 3 with its py launcher (winget install Python.Python.3.12) and Claude Code. It works in Windows
 PowerShell 5.1 and in PowerShell 7, and needs no administrator.
@@ -34,6 +35,7 @@ $Store = Join-Path $HOME '.claude-accounts'
 $HostName = 'com.lucasvecchete.claude_switch'
 $HostManifestPath = Join-Path $Share "$HostName.json"
 $TaskName = 'claude-switch-refresh'
+$WatchName = 'claude-switch-watch'
 $Documents = [Environment]::GetFolderPath('MyDocuments')
 # Windows PowerShell 5.1 and PowerShell 7 each read a profile of their own.
 $Profiles = @((Join-Path $Documents 'WindowsPowerShell\profile.ps1'), (Join-Path $Documents 'PowerShell\profile.ps1'))
@@ -95,8 +97,8 @@ if (($env:Path -split ';') -notcontains $Bin) {
 }
 
 Install-File (Join-Path $Windows 'claude-switch.cmd') (Join-Path $Bin 'claude-switch.cmd')
-foreach ($file in 'claude-switch.py', 'chrome-host.py', 'chrome-host.cmd', 'desktop.py', 'localstorage.py', 'notify.ps1',
-    'completion.ps1') {
+foreach ($file in 'claude-switch.py', 'chrome-host.py', 'chrome-host.cmd', 'desktop.py', 'localstorage.py', 'usage.py',
+    'notify.ps1', 'completion.ps1') {
     Install-File (Join-Path $Windows $file) (Join-Path $Share $file)
 }
 foreach ($file in 'manifest.json', 'worker.js') {
@@ -175,6 +177,47 @@ if ($current -ne "$Runner $Arguments") {
             -Description 'Refresh the logins of the Claude Code accounts that are not active' | Out-Null
         $script:Changed.Add($TaskName)
         Write-Output "registered the scheduled task $TaskName"
+    }
+}
+
+# The watch of automatic switching, as the claude-switch-watch timer of the Linux version: every 5 minutes, and only
+# while automatic switching is on. claude-switch auto on and off turn the task on and off, and this follows
+# ~\.claude-accounts\.auto. A run lasts 5 minutes at most, and none starts while one runs.
+$WatchArguments = "-3 -I `"$Share\claude-switch.py`" watch"
+$watch = Get-ScheduledTask -TaskName $WatchName -ErrorAction SilentlyContinue
+$watchCurrent = ''
+if ($watch) {
+    $watchCurrent = "$($watch.Actions[0].Execute) $($watch.Actions[0].Arguments)"
+}
+if ($watchCurrent -ne "$Runner $WatchArguments") {
+    if ($Check) {
+        Write-Difference "the scheduled task $WatchName"
+    } else {
+        $user = "$env:USERDOMAIN\$env:USERNAME"
+        $everyFiveMinutes = New-ScheduledTaskTrigger -Once -At (Get-Date).Date -RepetitionInterval (New-TimeSpan -Minutes 5)
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -MultipleInstances IgnoreNew
+        $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+        $action = New-ScheduledTaskAction -Execute $Runner -Argument $WatchArguments -WorkingDirectory $HOME
+        $watch = Register-ScheduledTask -TaskName $WatchName -Action $action -Trigger $everyFiveMinutes `
+            -Settings $settings -Principal $principal -Force `
+            -Description 'Keep the machine on the best Claude account with room while a Claude Code session is open'
+        $script:Changed.Add($WatchName)
+        Write-Output "registered the scheduled task $WatchName"
+    }
+}
+$autoOn = Test-Path -LiteralPath (Join-Path $Store '.auto')
+if ($watch -and (("$($watch.State)" -ne 'Disabled') -ne $autoOn)) {
+    if ($Check) {
+        Write-Difference "the state of the scheduled task $WatchName"
+    } elseif ($autoOn) {
+        Enable-ScheduledTask -TaskName $WatchName | Out-Null
+        $script:Changed.Add("$WatchName on")
+        Write-Output "turned on the scheduled task $WatchName, automatic switching is on"
+    } else {
+        Disable-ScheduledTask -TaskName $WatchName | Out-Null
+        $script:Changed.Add("$WatchName off")
+        Write-Output "turned off the scheduled task $WatchName until claude-switch auto on"
     }
 }
 

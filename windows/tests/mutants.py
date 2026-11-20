@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Breaks one guard of the Windows port at a time, in a copy, and runs the Windows suite that must catch it. A mutant
 that stays green is a guard no test holds. Each one undoes something only Windows does, seen on the PC on 09/11/2026,
-or a guard of the gateway keys and their Tab completion, which tests/test-keys.sh can't check on Windows.
+or a guard of the gateway keys, of automatic switching and of their Tab completion, which tests/test-keys.sh and
+tests/test-auto.sh can't check on Windows.
 tests/mutants.py does the same for the Linux version. The suites end a stand-in Desktop only, never the real one: every
 run that could reach taskkill gets a fake one. desktop.py and localstorage.py are copied together, as desktop.py loads
 localstorage.py from its own folder, and a mutant of completion.ps1 runs in a copy of the PowerShell files and of the
@@ -26,7 +27,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 WINDOWS = HERE.parent
 TARGETS = {"switch": WINDOWS / "claude-switch.py", "desktop": WINDOWS / "desktop.py",
            "localstorage": WINDOWS / "localstorage.py", "host": WINDOWS / "chrome-host.py",
-           "completion": WINDOWS / "completion.ps1"}
+           "completion": WINDOWS / "completion.ps1", "usage": WINDOWS / "usage.py"}
 TOGETHER = ("desktop", "localstorage")
 
 # (name, target, suite, text of the target, what replaces it)
@@ -231,10 +232,10 @@ MUTANTS = [
      "    if not isinstance(current, dict):\n        die(\"~/.claude/settings.json can't be read as JSON, nothing changed.\")\n",
      "    if not isinstance(current, dict):\n        settings, current = {}, {}\n"),
     ("key-left-on-login", "switch", "keys",
-     "        if key is not None:\n            set_key_env()\n            warn_environment(file)\n",
-     "        if key is not None:\n            warn_environment(file)\n"),
+     "        if key is not None:\n            set_key_env()\n            note_switch()\n",
+     "        if key is not None:\n            note_switch()\n"),
     ("key-left-on-other-login", "switch", "keys",
-     "    if key is not None:\n        set_key_env()\n    warn_environment(file)\n", "    warn_environment(file)\n"),
+     "    if key is not None:\n        set_key_env()\n    note_switch()\n", "    note_switch()\n"),
     ("key-half-switch-on-read-only", "switch", "keys", "    if key is not None:\n        require_writable_settings()\n", ""),
     ("key-unkept-overwritten-by-key", "switch", "keys",
      "def switch_to_key(file, account):\n    require_kept_key()\n", "def switch_to_key(file, account):\n"),
@@ -263,8 +264,8 @@ MUTANTS = [
     ("key-shell-ranks-ignored", "switch", "keys",
      '        if isinstance(account, dict) and filled(alt(account.get(var), "")):\n            break\n', ""),
     ("key-shell-settings-ignored", "switch", "keys", "        if var in settings:\n            continue\n", ""),
-    ("key-switch-no-env-warning", "switch", "keys", "    set_key_env(file)\n    warn_environment(file)\n",
-     "    set_key_env(file)\n"),
+    ("key-switch-no-env-warning", "switch", "keys", "    set_key_env(file)\n    note_switch()\n    warn_environment(file)\n",
+     "    set_key_env(file)\n    note_switch()\n"),
     ("key-overrides-unsaid", "switch", "keys",
      "    if live is not None:\n        remind_overrides(live)\n    remind_signins()\n", "    remind_signins()\n"),
     ("key-overrides-unranked", "switch", "keys",
@@ -300,10 +301,70 @@ MUTANTS = [
      '    return json.loads(pathlib.Path(path).read_text(encoding="utf-8"))\n'),
     ("key-name-unsafe", "switch", "keys", '    return STORE / ("key_" + re.sub(r"[^\\w@.-]", "_", name) + ".json")\n',
      '    return STORE / ("key_" + name + ".json")\n'),
+    # Automatic switching, which tests/test-auto.sh can't check on Windows.
+    ("auto-hold-ignored", "switch", "auto", "    hold = held_file()\n    best = best_of(files, hold)\n",
+     "    hold = None\n    best = best_of(files, hold)\n"),
+    ("auto-hold-outlives-its-room", "switch", "auto",
+     "    if hold is not None and best != hold:\n        HOLD.unlink(missing_ok=True)\n", ""),
+    ("auto-watch-without-session", "switch", "auto", '        if not auto_on() or usage_helper("sessions")[0] != 0:\n',
+     "        if not auto_on():\n"),
+    ("auto-watch-when-off", "switch", "auto", '        if not auto_on() or usage_helper("sessions")[0] != 0:\n',
+     '        if usage_helper("sessions")[0] != 0:\n'),
+    ("auto-watch-reads-too-seldom", "switch", "auto", '"--max-age", "240"', '"--max-age", "300"'),
+    ("auto-watch-task-untouched", "switch", "auto", "        if not watch_enable(True):\n", "        if False:\n"),
+    ("auto-hook-when-off", "switch", "auto",
+     '    raw = sys.stdin.buffer.read(1048576) if sys.stdin is not None else b""\n    if not auto_on():\n        return 0\n',
+     '    raw = sys.stdin.buffer.read(1048576) if sys.stdin is not None else b""\n'),
+    ("auto-hook-any-unknown", "switch", "auto", "        if not BUDGET_WORDS.search(text.lower()):\n            return 0\n", ""),
+    ("auto-hook-wakes-forever", "switch", "auto", "    if not may_wake(session):\n        return 0\n", ""),
+    ("auto-hook-refuses-the-next-account", "switch", "auto", "    if switched > failed_at(transcript):\n",
+     "    if switched > failed_at(transcript) + 10 ** 15:\n"),
+    ("auto-hook-trusts-an-old-error", "switch", "auto",
+     "    return moment if moment is not None and moment > STARTED - 60000 else STARTED - 1500\n",
+     "    return moment if moment is not None else STARTED - 1500\n"),
+    ("auto-hook-says-everything", "switch", "auto", "    sys.stdout = sys.stderr = LOGGING\n", ""),
+    ("auto-hook-helpers-speak-to-claude", "switch", "auto",
+     "            return subprocess.run(command, stdin=subprocess.DEVNULL, stdout=LOGGING, stderr=subprocess.STDOUT,\n",
+     "            return subprocess.run(command, stdin=subprocess.DEVNULL,\n"),
+    ("auto-hook-old-entry-kept", "switch", "auto", "        if not hook_current():\n            set_auto_hook(True)\n",
+     "        if not hook_in_settings():\n            set_auto_hook(True)\n"),
+    ("auto-on-takes-every-failure-hook", "switch", "auto",
+     "    kept = [entry for entry in stop_failures(settings) if not own_hook(entry)]\n", "    kept = []\n"),
+    ("auto-exec-hook-unknown", "switch", "auto",
+     '        if isinstance(arguments, list) and arguments[-1:] == ["hook"] \\\n', "        if False \\\n"),
+    ("auto-hook-through-a-shell", "switch", "auto",
+     '    return {"type": "command", "command": command, "args": arguments, "asyncRewake": True, "timeout": 120}\n',
+     '    return {"type": "command", "command": " ".join([command, *arguments]), "asyncRewake": True, "timeout": 120}\n'),
+    ("auto-hook-console-window", "switch", "auto", '    launcher = shutil.which("pyw.exe")\n', "    launcher = None\n"),
+    ("auto-switch-time-of-a-login-unnoted", "switch", "auto", "        set_key_env()\n    note_switch()\n",
+     "        set_key_env()\n"),
+    ("auto-switch-time-of-a-key-unnoted", "switch", "auto", "    set_key_env(file)\n    note_switch()\n",
+     "    set_key_env(file)\n"),
+    ("auto-order-ignored", "switch", "auto",
+     '        order = ORDER_FILE.read_text(encoding="utf-8").splitlines()[0].split()\n', "        order = []\n"),
+    ("auto-order-twice", "switch", "auto", '        if kind in order:\n            die(f"{kind} is twice in the order.")\n', ""),
+    ("auto-order-not-routed", "switch", "auto", "        if auto_on() and not route():\n", "        if False:\n"),
+    ("auto-renewed-key-still-refused", "switch", "auto", "    store_key(file, data)\n    forget_refusal(file)\n",
+     "    store_key(file, data)\n"),
+    ("auto-list-without-left", "switch", "auto", "    live = active_file()\n    read_left()\n", "    live = active_file()\n"),
+    ("auto-desktop-asks", "switch", "auto", '    if AUTO:\n        answer = "yes"\n', '    if False:\n        answer = "yes"\n'),
+    # What only Windows does in usage.py.
+    ("usage-session-by-pid-alone", "usage", "auto",
+     "        if running is not None and (started is None or running == str(started)):\n", "        if running is not None:\n"),
+    ("usage-ended-process-runs", "usage", "auto",
+     "            if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value != 259:\n"
+     "                return None\n", ""),
+    ("usage-output-in-the-code-page", "usage", "auto",
+     '                stream.reconfigure(encoding="utf-8", errors="replace")\n', "                pass\n"),
     # The Tab completion of the gateway keys.
     ("completion-key-missing", "completion", "powershell",
-     "$candidates = @('list', 'login', 'key', 'rename', 'refresh', 'help') + @(& $accounts)",
-     "$candidates = @('list', 'login', 'rename', 'refresh', 'help') + @(& $accounts)"),
+     "$candidates = @('list', 'login', 'key', 'rename', 'refresh', 'auto', 'help') + @(& $accounts)",
+     "$candidates = @('list', 'login', 'rename', 'refresh', 'auto', 'help') + @(& $accounts)"),
+    ("completion-no-auto", "completion", "powershell",
+     "$candidates = @('list', 'login', 'key', 'rename', 'refresh', 'auto', 'help') + @(& $accounts)",
+     "$candidates = @('list', 'login', 'key', 'rename', 'refresh', 'help') + @(& $accounts)"),
+    ("completion-no-auto-actions", "completion", "powershell", "$candidates = 'on', 'off', 'order'", "$candidates = @()"),
+    ("completion-no-kinds", "completion", "powershell", "$candidates = 'ultra', 'max', 'key'", "$candidates = @()"),
     ("completion-keys-after-login", "completion", "powershell", "$candidates = @(& $accounts 'logins')",
      "$candidates = @(& $accounts)"),
     ("completion-key-actions-missing", "completion", "powershell", "$candidates = 'import', 'add', 'renew', 'remove'",
@@ -329,6 +390,8 @@ def command(suite, files):
         return [sys.executable, "-I", str(HERE / "test-switch.py"), str(files["switch"])]
     if suite == "keys":
         return [sys.executable, "-I", str(HERE / "test-keys.py"), str(files["switch"])]
+    if suite == "auto":
+        return [sys.executable, "-I", str(HERE / "test-auto.py"), str(files["switch"]), str(files["usage"])]
     if suite == "desktop":
         return [sys.executable, "-I", str(HERE / "test-desktop.py"), str(files["desktop"])]
     if suite == "powershell":
@@ -358,7 +421,8 @@ def run(mutant):
             (files["repo"] / manifest).parent.mkdir(parents=True)
             shutil.copy2(WINDOWS.parent / manifest, files["repo"] / manifest)
             shutil.copy2(mutated, files["repo"] / "windows" / mutated.name)
-        result = subprocess.run(command(suite, files), capture_output=True, text=True, encoding="utf-8", timeout=900,
+        result = subprocess.run(command(suite, files), capture_output=True, text=True, encoding="utf-8",
+                                errors="replace", timeout=900,
                                 env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
                                 creationflags=subprocess.CREATE_NO_WINDOW)
         return name, "killed" if result.returncode != 0 else "SURVIVED"

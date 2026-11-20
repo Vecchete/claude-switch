@@ -4,8 +4,8 @@ The Windows 11 port of claude-switch. It is experimental: it was tested on one W
 few things were never run there for real yet, see [Status](#status) and
 [Not verified yet](#not-verified-yet).
 
-The port follows `bin/claude-switch`, `share/chrome-host.py` and `share/desktop.py` as of commit f626757,
-[gateway keys](../docs/gateway-keys.md) included. When the Linux version changes, the port changes with it:
+The port follows `bin/claude-switch`, `share/chrome-host.py`, `share/desktop.py` and `share/usage.py` as of
+commit d1bf78c, [gateway keys](../docs/gateway-keys.md) and [automatic switching](../docs/auto.md) included. When the Linux version changes, the port changes with it:
 `windows/tests/run.sh` says on Linux whether it still behaves the same, and `windows\tests\run.ps1` checks
 on Windows what only Windows does.
 
@@ -21,6 +21,7 @@ settings Claude Desktop keeps per account, which go over to the next account.
 |---|---|---|
 | The command | `claude-switch.py`, `claude-switch.cmd` | Runs on Windows: the store, `list` and `rename`. No real switch yet |
 | Gateway keys | `claude-switch.py` | `key import`, `add`, `renew` and `remove` and the switches to and from a key pass on scratch profiles, on Windows and on Linux. Not tried against a real gateway yet |
+| Automatic switching | `claude-switch.py`, `usage.py`, the scheduled task `claude-switch-watch` | `auto on` and `off`, `auto order`, the LEFT column, the watch and the hook pass on a scratch profile against a stand-in usage endpoint and gateway. On the test machine `list` read both subscriptions, `auto on` wrote the hook and turned the task on, and the task ran from Task Scheduler with result 0. No real session has met a limit with it on Windows yet |
 | claude.ai in Chrome | `chrome-host.py`, `chrome-host.cmd`, and the extension of `share/chrome-extension` as it is | The named pipe works end to end with a stand-in extension, a second host and the pending file. Not tried with the extension loaded in Chrome yet |
 | Claude Desktop | `desktop.py`, `localstorage.py` | Finds the folder, the main process and the account of a running Desktop. Switch, quit and the carrying over pass on a scratch profile, and the carrying over ran both ways on a copy of real Desktop data. Never quit or switched for real |
 | Remote Control | `claude-switch.py`, `chrome-host.py`, `desktop.py` | The registration cookie moves with Chrome and Desktop, as on Linux. A `claude remote-control` server is stopped when you answer yes |
@@ -63,12 +64,14 @@ The places of the Linux version, under the user profile:
 | Linux | Windows | What |
 |---|---|---|
 | `~/.local/bin/claude-switch` | `%USERPROFILE%\.local\bin\claude-switch.cmd` | The command. `claude.exe` can be in that folder (the native installer) or in `%LOCALAPPDATA%\Microsoft\WinGet\Links` (winget), it only has to be in the `PATH` |
-| `~/.local/share/claude-switch/` | `%USERPROFILE%\.local\share\claude-switch\` | `claude-switch.py`, the helpers, `notify.ps1`, `completion.ps1`, the extension and the host manifest |
+| `~/.local/share/claude-switch/` | `%USERPROFILE%\.local\share\claude-switch\` | `claude-switch.py`, the helpers (`usage.py` among them), `notify.ps1`, `completion.ps1`, the extension and the host manifest |
 | `~/.claude/.credentials.json`, `~/.claude.json` | `%USERPROFILE%\.claude\.credentials.json`, `%USERPROFILE%\.claude.json` | The login and the account a switch moves |
 | `~/.claude/settings.json` | `%USERPROFILE%\.claude\settings.json` | Where the entries of a gateway key go, in its `env` |
-| `~/.claude-accounts/` | `%USERPROFILE%\.claude-accounts\` | The accounts, the gateway keys (`key_<name>.json`), the saved sessions, the lock and `.task.log` |
+| `~/.claude-accounts/` | `%USERPROFILE%\.claude-accounts\` | The accounts, the gateway keys (`key_<name>.json`), the saved sessions, the lock, `.task.log`, and what automatic switching keeps: `.auto`, `.auto-order`, `.usage\`, `.hold`, `.switched`, `.woken\` and `.auto.log` |
 | | `%USERPROFILE%\.claude-accounts\.desktop\<accountUuid>.web\` | The storage of Desktop's window as each account left it, from which what the account lost comes back |
 | The systemd timer `claude-switch-refresh` | The scheduled task `claude-switch-refresh` | 2 and 15 minutes after logon, then every 4 hours |
+| The systemd timer `claude-switch-watch` | The scheduled task `claude-switch-watch` | Every 5 minutes, turned on only while automatic switching is |
+| The `StopFailure` hook `~/.local/bin/claude-switch hook` | `pyw.exe -3 -I %USERPROFILE%\.local\share\claude-switch\claude-switch.py hook`, a program and its arguments | What Claude Code runs when a turn ends on a limit |
 | `NativeMessagingHosts/` of each Chrome | `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.lucasvecchete.claude_switch` | Where Chrome and Chrome Beta find the host |
 | `~/.config/Claude` | `%LOCALAPPDATA%\Claude-Data\claude_<package id>`, else `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude`, else `%APPDATA%\Claude` | The data of Claude Desktop. A folder Desktop moved out of keeps only a `.user-data-left.*` file and is skipped |
 | The bash completion | A line in each PowerShell profile | Tab completion |
@@ -160,6 +163,24 @@ PowerShell does what only PowerShell does: the install, the Tab completion and t
   instance.
 - Under the execution policy Restricted, PowerShell runs no profile, so there is no Tab completion.
   `install.ps1` says so and changes nothing.
+- The `StopFailure` hook of automatic switching is a program and its arguments in `settings.json`, with no
+  shell between: the hooks reference says a `.cmd` can't be started that way on Windows, and a command line
+  would go to Git Bash or to PowerShell, whichever is installed. The program is the `pyw.exe` of the py
+  launcher, so no console window opens, else the `pythonw.exe` of the Python that runs claude-switch.
+  `auto on` writes it again when it finds the hook of another path or another form.
+- The watch is the scheduled task `claude-switch-watch`, every 5 minutes, and a run lasts 5 minutes at
+  most. `install.ps1` registers it turned off unless automatic switching is on, and `claude-switch auto on`
+  and `off` turn it on and off with `schtasks`.
+- A session counts as open while the process its file in `~/.claude/sessions` names runs and was created at
+  the moment its `procStart` says. Claude Code writes the creation time of the process there on Windows, in
+  units of 100 ns since 1601, where Linux has the start time `/proc` gives.
+- A hook of a Code session of Claude Desktop runs inside Desktop, so an automatic switch there leaves Desktop
+  on its account, as a switch typed in such a session does. The watch runs outside Desktop and restarts it.
+- In a hook, what the helpers of claude-switch say goes to `.auto.log` too. Windows hands a program its
+  standard handles rather than the files Python writes to, so claude-switch gives them the log.
+- `usage.py` reads JSON as UTF-8 whatever the code page of Windows, and writes what it says in UTF-8, so a
+  profile path or a name that isn't ASCII comes through to claude-switch whole. A reading another run has
+  open is replaced once that run lets go of it.
 
 ## Tests
 
@@ -175,10 +196,14 @@ suites of the Linux version against the port:
 | `tests/test-chrome-host.py` | `chrome-host.py` | 55 passed |
 | `tests/test-desktop.py` | `desktop.py` | 51 passed |
 
-Those runs came before the gateway keys. `windows/tests/run.sh` now runs `tests/test-keys.sh` against the
-port too, which hasn't run yet: it needs `jq` and the Linux `claude`. On 2026-11-20, on Linux in WSL
-(Ubuntu 26.04, Python 3.14.4), `windows/tests/test-switch.py` passed 38 checks and
-`windows/tests/test-keys.py` 134, with what only Linux does in place of what only Windows does.
+Those runs came before the gateway keys and automatic switching. `windows/tests/run.sh` now runs
+`tests/test-keys.sh`, `tests/test-usage.py` and `tests/test-auto.sh` against the port too, which haven't run
+yet: the shell suites need `jq` and the Linux `claude`. On 2026-11-20, on Linux in WSL
+(Ubuntu 26.04, Python 3.14.4), `windows/tests/test-switch.py` passed 38 checks, `windows/tests/test-keys.py`
+145 and `windows/tests/test-auto.py` 81, with what only Linux does in place of what only Windows does.
+`tests/test-usage.py` passed 68 against `usage.py` with `TZ=UTC`. In the zone of the PC, CET, 5 of its
+checks fail against `share/usage.py` as well: the test builds the times it expects in its own zone, and runs
+`usage.py` in UTC.
 
 On Windows 11 Pro 26300, with Python 3.14.3 and Windows PowerShell 5.1, on 2026-11-20,
 `windows\tests\run.ps1` ran:
@@ -186,13 +211,14 @@ On Windows 11 Pro 26300, with Python 3.14.3 and Windows PowerShell 5.1, on 2026-
 | Suite | Run against | Checks |
 |---|---|---|
 | `windows/tests/test-switch.py` | `claude-switch.py` | 43 passed |
-| `windows/tests/test-keys.py` | `claude-switch.py` | 135 passed |
+| `windows/tests/test-keys.py` | `claude-switch.py` | 146 passed |
+| `windows/tests/test-auto.py` | `claude-switch.py` and `usage.py` | 82 passed |
 | `windows/tests/test-desktop.py` | `desktop.py` and `localstorage.py` | 86 passed |
 | `windows/tests/test-chrome.py` | `claude-switch.py` and `chrome-host.py` | 14 passed |
-| `windows/tests/test-powershell.ps1` | `install.ps1`, `completion.ps1`, `notify.ps1`, `tests/run.ps1` | 41 passed |
+| `windows/tests/test-powershell.ps1` | `install.ps1`, `completion.ps1`, `notify.ps1`, `tests/run.ps1` | 46 passed |
 
-`windows/tests/mutants.py` breaks the Windows guards, those of the gateway keys and those of their Tab
-completion one at a time, in a copy: 117 of 117 killed. Eight runs of `test-keys.py` at once, the load of
+`windows/tests/mutants.py` breaks the Windows guards, those of the gateway keys, those of automatic switching
+and those of their Tab completion one at a time, in a copy: 154 of 154 killed. Eight runs of `test-keys.py` at once, the load of
 `mutants.py -j 8`, all passed, so no mutant was killed by a check that fails under load.
 
 `test-desktop.py` writes and reads the Local Storage of Desktop with its own code, after the formats of
@@ -203,11 +229,13 @@ ran on a copy of real Desktop data, from one account to the other and back: only
 and no setting was lost.
 
 The suites of `tests/` drive bash, symbolic links and `/proc`, so they stay on Linux. On Windows,
-`test-keys.py`, `test-desktop.py` and `test-chrome.py` take their place, with a scratch profile, a
+`test-keys.py`, `test-auto.py`, `test-desktop.py` and `test-chrome.py` take their place, with a scratch
+profile, a stand-in usage endpoint and gateway on the machine itself, a
 stand-in claude, stand-in processes that hold files the way Desktop does, and a pipe named after a user of
 their own. Every run that could end a process gets a stand-in taskkill, so they never touch the real
-accounts, Chrome or Desktop. `test-keys.py` gives a folder of its scratch profile an ACL that denies
-making files, and removes it again before it deletes the folder.
+accounts, Chrome or Desktop. `test-keys.py` and `test-auto.py` give a folder of their scratch profile an
+ACL that denies making files, and remove it again before they delete the folder. `test-auto.py` keeps its
+profile under a path that isn't ASCII.
 
 ## Behavior seen on Windows
 
@@ -262,6 +290,9 @@ What a tester on Windows can still check:
 6. Keep a gateway key with `claude-switch key add`, typing the token at the prompt in Windows Terminal,
    with PowerShell and with cmd. Then switch to it and back with a session open, and check with
    `claude auth status` that the session follows.
+7. With automatic switching on, let a session in a terminal meet the weekly limit of its account: the
+   machine should move to the next account and the session carry on by itself. Then let the watch task
+   bring the machine back once that limit resets, with Desktop open.
 
 ## Sources
 
@@ -285,3 +316,5 @@ What a tester on Windows can still check:
   https://support.claude.com/en/articles/17728952-what-is-the-ultra-plan
 - WinRT toasts work in Windows PowerShell 5.1 and not in PowerShell 7:
   https://smsagent.blog/2024/10/29/popping-toast-notifications-in-powershell-core/
+- A hook with `args` is a program started with no shell, which on Windows has to be a real executable, and
+  `asyncRewake` wakes the session on exit code 2: https://code.claude.com/docs/en/hooks

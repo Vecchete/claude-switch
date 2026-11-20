@@ -39,7 +39,8 @@ Windows the window's storage of the account beside it), and only you can read th
     desktop.py status            what Desktop is on, as JSON
     desktop.py switch ACCOUNT    save the sign-in under its account, put back the one of ACCOUNT
     desktop.py quit [SECONDS]    close Desktop and wait until it is gone, 20 seconds at most
-    desktop.py start             start Desktop, without the environment of the calling session
+    desktop.py start             start Desktop, without the environment of the calling session, in a systemd
+                                 scope of its own when the user's systemd runs
 
 switch exits 3 when Desktop is open and on another account, 4 when its session has no name, and on Windows 6 when
 Desktop is open and runs this switch, through one of its Code sessions or its terminal.
@@ -935,7 +936,15 @@ def start():
                    if not key.startswith(("CLAUDE", "ANTHROPIC"))}
     if WINDOWS:
         return start_on_windows(environment)
-    subprocess.Popen(["claude-desktop"], env=environment, start_new_session=True, stdin=subprocess.DEVNULL,
+    command = ["claude-desktop"]
+    # What a systemd service starts goes with it when it ends, the automatic switch of the watch timer for instance, so
+    # Desktop gets a scope of its own whenever the user's systemd is there to give one. Windows starts it through the
+    # shell, out of the task that switched.
+    runtime = environment.get("XDG_RUNTIME_DIR")
+    if runtime and os.path.exists(os.path.join(runtime, "systemd", "private")) \
+            and shutil.which("systemd-run", path=environment.get("PATH")):
+        command = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--"] + command
+    subprocess.Popen(command, env=environment, start_new_session=True, stdin=subprocess.DEVNULL,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=HOME)
     return 0
 

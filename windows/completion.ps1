@@ -50,7 +50,7 @@ Register-ArgumentCompleter -Native -CommandName 'claude-switch', 'claude-switch.
         if ($typed.StartsWith('-')) {
             $candidates = '-h', '--help'
         } else {
-            $candidates = @('list', 'login', 'key', 'rename', 'refresh', 'help') + @(& $accounts)
+            $candidates = @('list', 'login', 'key', 'rename', 'refresh', 'auto', 'help') + @(& $accounts)
         }
     } elseif ($before.Count -eq 2) {
         $command = $before[1].Extent.Text
@@ -62,6 +62,13 @@ Register-ArgumentCompleter -Native -CommandName 'claude-switch', 'claude-switch.
             $candidates = 'import', 'add', 'renew', 'remove'
         } elseif ($command -eq 'refresh') {
             $candidates = '--force'
+        } elseif ($command -eq 'auto') {
+            $candidates = 'on', 'off', 'order'
+        }
+    } elseif ($before[1].Extent.Text -eq 'auto') {
+        # The kinds of account after auto order.
+        if ($before[2].Extent.Text -eq 'order') {
+            $candidates = 'ultra', 'max', 'key'
         }
     } elseif ($before[1].Extent.Text -eq 'key') {
         # The key to renew or remove, and the key a new one is like.

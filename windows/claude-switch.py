@@ -19,6 +19,11 @@ date a sign-in ends, so that is announced.
 claude.ai in Chrome follows a switch when the companion in ~/.local/share/claude-switch is installed: its extension
 swaps the claude.ai session cookies, see chrome-host.py there. Claude Desktop follows too, through desktop.py
 there, once it is closed.
+
+With claude-switch auto on, the machine goes to the best account with room by itself: the claude-switch-watch task
+checks every 5 minutes while a session is open, and a StopFailure hook in ~/.claude/settings.json moves the machine as
+soon as a session meets a limit, then wakes that session. usage.py in ~/.local/share/claude-switch reads what each
+account has left and ranks them.
 """
 import contextlib
 import datetime
@@ -55,6 +60,31 @@ SHARE = HOME / ".local" / "share" / "claude-switch"
 CHROME_HOST = SHARE / "chrome-host.py"
 DESKTOP_HELPER = SHARE / "desktop.py"
 NOTIFY = SHARE / "notify.ps1"
+USAGE_HELPER = SHARE / "usage.py"
+SELF = pathlib.Path(__file__).resolve()
+# When this run started: a hook tells by it whether its session failed before the last switch.
+STARTED = int(time.time() * 1000)
+
+# Automatic switching is on while this file is there.
+AUTO_FLAG = STORE / ".auto"
+# The account a switch typed by hand holds while automatic switching is on, until it runs out.
+HOLD = STORE / ".hold"
+# The order the kinds of account rank in, see claude-switch auto order, and the one with no such file.
+ORDER_FILE = STORE / ".auto-order"
+DEFAULT_ORDER = ("ultra", "key", "max")
+# When the last switch happened, in milliseconds.
+SWITCHED = STORE / ".switched"
+# When each session was woken, one file per session.
+WOKEN = STORE / ".woken"
+# What the automatic switches did and what claude-switch said meanwhile: a hook's stderr goes to Claude.
+AUTO_LOG = STORE / ".auto.log"
+# What runs the watch: its systemd timer elsewhere, the scheduled task install.ps1 registers on Windows.
+WATCH_TIMER = "claude-switch-watch.timer"
+WATCH_TASK = "claude-switch-watch"
+# What Claude Code passes to the StopFailure hook of claude-switch. A budget comes back as unknown.
+HOOK_MATCHER = "rate_limit|billing_error|authentication_failed|unknown"
+# The words a gateway answers with when a key spent its budget, which Claude Code reports as unknown.
+BUDGET_WORDS = re.compile(r"budget|credit balance|insufficient_quota|spend limit")
 
 # What belongs to the account in .credentials.json: what claude's own logout deletes with the login (2.1.314).
 # mcpOAuth and the rest never move.
@@ -68,7 +98,7 @@ CACHES = ("managedSettingsNoticeSeenOrg", "additionalModelOptionsCache", "additi
           "autoCompactWindowsCache", "cachedUsageUtilization", "metricsStatusCache", "metricsStatusCacheByPrincipal",
           "githubWebConnectionStatusCache", "unusedLimitResetStatusCache", "startupPrefetchedAt")
 
-COMMANDS = ("list", "login", "key", "rename", "refresh", "help")
+COMMANDS = ("list", "login", "key", "rename", "refresh", "help", "auto", "watch", "hook")
 
 # A gateway key account is the set of these entries in the env of ~/.claude/settings.json: a token there goes before the
 # claude.ai login, and the model names and the URL belong to the gateway. A switch replaces all of them, the other
@@ -107,12 +137,23 @@ DEAD = False
 WEB_AWAY = False
 # The open file that holds the store lock.
 STORE_LOCK = None
+# Set while claude-switch switches on its own: Desktop restarts without a question.
+AUTO = False
+# The account the last route went to, and why, for the hook.
+ROUTED_TO = ""
+ROUTED_WHY = ""
+# What each account has left, by file, for list and the prompt.
+LEFT_OF = {}
+# ~/.claude-accounts/.auto.log while what claude-switch and its helpers say goes there, and where a hook's last
+# sentence goes, to Claude.
+LOGGING = None
+HOOK_ERR = None
 
 USAGE = """\
 Usage:
   claude-switch                          Prompt to switch, add or rename.
   claude-switch NAME                     Switch the whole machine to NAME, a name or an email.
-  claude-switch list                     Print the accounts. * marks the active one.
+  claude-switch list                     Print the accounts and what each has left. * marks the active one.
   claude-switch login [ACCOUNT] [OPTIONS]
                                          Sign in an account and keep it here. It doesn't switch.
                                          With ACCOUNT, a name or an email already here, it renews
@@ -132,6 +173,14 @@ Usage:
   claude-switch refresh [--force]        Refresh the login of the accounts that are not active.
                                          The claude-switch-refresh task runs it at logon and every
                                          4 hours. --force refreshes them even when not due.
+  claude-switch auto [on|off]            Turn automatic switching on or off, or say how it stands.
+                                         On, the machine goes to the best account with room: every 5
+                                         minutes while a session is open, and as soon as a session
+                                         meets a limit, which then carries on by itself.
+  claude-switch auto order [KIND...]     Say which kind of account comes first, or print the order. A
+                                         KIND is ultra, a subscription with no 5-hour limit, max, Max
+                                         and the other plans, or key, an API or gateway key. Those left
+                                         out follow in the order ultra, key, max.
   claude-switch help                     Print this help, as -h and --help do.
 
 A switch changes the account only, wherever you call it. New sessions start on it and running
@@ -147,6 +196,11 @@ Claude Desktop stay on their account.
 
 A sign-in lasts about 28 days, and only a new sign-in moves its end. From 7 days before, list, the
 prompt and a switch say when it ends, with the claude-switch login that renews it.
+
+The best account with room is an Ultra subscription first, then a key, then another plan, unless
+claude-switch auto order says otherwise: only the weekly limit counts. An account that stops a session
+waits until its limit resets. A switch typed by hand stays while automatic switching is on, until that
+account runs out.
 
 Don't use /logout on an account you want to keep: it revokes the login saved here too.
 To forget an account, remove its file in ~/.claude-accounts, or a gateway key with claude-switch key
@@ -598,18 +652,40 @@ def kept_owner(target, path):
     return True
 
 
-def set_key_env(file=None):
-    """Puts the entries of the key account FILE in the env of settings.json in place of the gateway entries there, or
-    only empties those without FILE: an entry taken out stays as "", which claude takes as unset, so running sessions
-    leave it too. The rest of the file stays, and a missing or empty one is taken as {}. It's written aside and renamed,
-    since running sessions read it at any moment, with the mode, owner and group it had. The token never goes on a
-    command line. A session keeps the ANTHROPIC_MODEL it started on, which is said."""
+def settings_to_change():
+    """settings.json as a switch or auto finds it, once this user may write it there: {} when it's missing or empty,
+    None when it can't be read as JSON."""
     require_writable_settings()
     target = settings_target()
     try:
-        settings = load(target) if target.is_file() and target.stat().st_size > 0 else {}
+        return load(target) if target.is_file() and target.stat().st_size > 0 else {}
     except (OSError, ValueError):
-        settings = None
+        return None
+
+
+def write_settings(settings):
+    """SETTINGS in settings.json, the rest of what was read there kept. It's written aside and renamed, since running
+    sessions read it at any moment, with the mode, owner and group it had."""
+    target = settings_target()
+    aside = pathlib.Path(f"{target}.switch")
+    WRITING[:] = [aside]
+    write_private(aside, dumps(settings))
+    if not target.exists() or kept_owner(target, aside):
+        replace(aside, target)
+    else:
+        # An owner or a group this user can't give a file of its own: written in place, which keeps them.
+        with open(target, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(aside.read_text(encoding="utf-8"))
+        aside.unlink(missing_ok=True)
+    WRITING.clear()
+
+
+def set_key_env(file=None):
+    """Puts the entries of the key account FILE in the env of settings.json in place of the gateway entries there, or
+    only empties those without FILE: an entry taken out stays as "", which claude takes as unset, so running sessions
+    leave it too. The rest of the file stays, and a missing or empty one is taken as {}. The token never goes on a
+    command line. A session keeps the ANTHROPIC_MODEL it started on, which is said."""
+    settings = settings_to_change()
     current = alt(dig(settings, "env"), {}) if isinstance(settings, dict) else None
     if not isinstance(current, dict):
         die("~/.claude/settings.json can't be read as JSON, nothing changed.")
@@ -622,17 +698,7 @@ def set_key_env(file=None):
         settings["env"] = env
     else:
         settings.pop("env", None)
-    aside = pathlib.Path(f"{target}.switch")
-    WRITING[:] = [aside]
-    write_private(aside, dumps(settings))
-    if not target.exists() or kept_owner(target, aside):
-        replace(aside, target)
-    else:
-        # An owner or a group this user can't give a file of its own: written in place, which keeps them.
-        with open(target, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(aside.read_text(encoding="utf-8"))
-        aside.unlink(missing_ok=True)
-    WRITING.clear()
+    write_settings(settings)
     if model and model != key_set(account).get("ANTHROPIC_MODEL"):
         warn(f"A running session that started on the model {model} keeps it: /model in it picks another.")
 
@@ -643,9 +709,24 @@ def switch_to_key(file, account):
         print(f"Already on {account.label}.")
         return
     set_key_env(file)
+    note_switch()
     warn_environment(file)
     remind_overrides(file)
     print(f"Switched to {account.label}, a gateway key. claude.ai in Chrome and Claude Desktop stay on their account.")
+
+
+def write_text(path, text):
+    """TEXT in PATH, written aside first and renamed after, so a run that reads it never finds it half written."""
+    temporary = pathlib.Path(f"{path}.{os.getpid()}.tmp")
+    write_private(temporary, text)
+    replace(temporary, path)
+
+
+def note_switch():
+    """When the last switch happened, for automatic switching: a session that failed before it only has to send its
+    request again."""
+    if AUTO_FLAG.exists():
+        write_text(SWITCHED, f"{now_ms()}\n")
 
 
 def key_usage():
@@ -791,6 +872,7 @@ def key_renew(who):
     env["ANTHROPIC_AUTH_TOKEN" if key_set(env).get("ANTHROPIC_AUTH_TOKEN") is not None else "ANTHROPIC_API_KEY"] = token
     data["env"] = env
     store_key(file, data)
+    forget_refusal(file)
     if active:
         set_key_env(file)
         print(f"Renewed {account.label}. Running sessions take the new token at their next request.")
@@ -830,6 +912,11 @@ def cmd_key(arguments):
             key_remove(name)
     else:
         key_usage()
+
+
+def forget_refusal(file):
+    """A new token or a new sign-in ends the wait a refused account was in."""
+    (STORE / ".usage" / f"{pathlib.Path(file).stem}.refused.json").unlink(missing_ok=True)
 
 
 def try_lock(handle):
@@ -955,8 +1042,14 @@ def helper_command(path):
 
 
 def run(command):
-    """The status of COMMAND, run in this terminal."""
+    """The status of COMMAND, run in this terminal, or with what it says in ~/.claude-accounts/.auto.log while
+    claude-switch writes there. Windows hands a program its standard handles, not the files Python writes to, so the
+    log is given to it."""
     try:
+        if LOGGING is not None:
+            LOGGING.flush()
+            return subprocess.run(command, stdin=subprocess.DEVNULL, stdout=LOGGING, stderr=subprocess.STDOUT,
+                                  creationflags=NO_WINDOW).returncode
         return subprocess.run(command).returncode
     except OSError:
         return 127
@@ -1019,15 +1112,19 @@ def ask(question, seconds):
 
 def desktop_switch(file, label):
     """Claude Desktop follows the switch, when it is installed. It must be closed for that, so an open one is
-    restarted when the terminal says yes."""
+    restarted: on a switch claude-switch makes by itself, and on one typed in a terminal unless it says no. A Desktop
+    that runs this, through one of its Code sessions, stays on its account: desktop.py says so with 6, not 3."""
     helper = helper_command(DESKTOP_HELPER)
     account = dig(load_or_none(file), "oauthAccount", "accountUuid") if helper else None
     if not account or run(helper + ["switch", account]) != 3:
         return
-    answer = ""
-    if terminal():
-        answer = ask(f"Claude Desktop is open. Restart it on {label}? Code and Cowork tasks running in it stop. [y/N] ", 60)
-    if answer not in ("y", "Y", "yes", "Yes"):
+    answer = "no"
+    if AUTO:
+        answer = "yes"
+    elif terminal():
+        answer = ask(f"Claude Desktop is open. Restart it on {label}? Code and Cowork tasks running in it stop. [Y/n] ",
+                     60) or "yes"
+    if answer not in ("y", "Y", "yes", "Yes", "YES"):
         print(f"Claude Desktop is open, so it stays on its account. Close it and run claude-switch {quote(label)} "
               "to bring it along.")
         return
@@ -1146,6 +1243,7 @@ def switch_to(file):
     if file == live_file():
         if key is not None:
             set_key_env()
+            note_switch()
             warn_environment(file)
             remind_overrides(file)
             print(f"Switched to {account.label}.")
@@ -1168,6 +1266,7 @@ def switch_to(file):
         die("A running session wrote over the switch. Run it again.")
     if key is not None:
         set_key_env()
+    note_switch()
     warn_environment(file)
     remind_overrides(file)
     check_login_keys()
@@ -1207,6 +1306,7 @@ def cmd_login(arguments):
     lock_store()
     known = file.is_file()
     store_account(SIGNIN / ".credentials.json", SIGNIN / ".claude.json", file)
+    forget_refusal(file)
     account = read_account(file)
     if wanted is not None and file != wanted:
         warn(f"The browser signed in {account.email}, not {wanted_email}. {account.email} is kept, "
@@ -1514,13 +1614,486 @@ def cmd_refresh(arguments):
     return 1 if DEAD else 0
 
 
+def auto_on():
+    return AUTO_FLAG.exists()
+
+
+def hold_account(file):
+    """A switch typed by hand holds its account while automatic switching is on, until that account runs out."""
+    if auto_on():
+        write_text(HOLD, f"{pathlib.Path(file).name}\n")
+
+
+def held_file():
+    """The account a switch typed by hand holds, None when none does or it's gone."""
+    try:
+        name = HOLD.read_text(encoding="utf-8").splitlines()[0].strip()
+    except (OSError, IndexError):
+        return None
+    file = STORE / name
+    return file if name and pathlib.Path(name).name == name and file.is_file() else None
+
+
+def notify(title, body):
+    """A desktop notification of an automatic switch."""
+    show_notification(title, body)
+
+
+def shell_word(text):
+    """TEXT as bash's printf %q writes it, which the shell that runs a hook reads back as one word."""
+    if not text:
+        return "''"
+    return "".join(char if re.fullmatch(r"[\w@%+=:,./-]", char, re.ASCII) else "\\" + char for char in text)
+
+
+def hook_handler():
+    """The StopFailure hook of this claude-switch, as auto on writes it. Claude Code runs it in the background when a
+    turn ends on a limit, and its exit 2 wakes the session. Elsewhere it's a command line for the shell. On Windows
+    Python runs this script with no shell between: the hooks reference says a .cmd can't be started that way, and a
+    command line goes to Git Bash or PowerShell, whichever is there. pyw.exe, the launcher the tasks of install.ps1
+    use, opens no console window."""
+    if not WINDOWS:
+        return {"type": "command", "command": f"{shell_word(str(SELF))} hook", "asyncRewake": True, "timeout": 120}
+    launcher = shutil.which("pyw.exe")
+    if launcher:
+        command, arguments = launcher, ["-3", "-I", str(SELF), "hook"]
+    else:
+        windowless = pathlib.Path(sys.executable).with_name("pythonw.exe")
+        command, arguments = str(windowless) if windowless.is_file() else sys.executable, ["-I", str(SELF), "hook"]
+    return {"type": "command", "command": command, "args": arguments, "asyncRewake": True, "timeout": 120}
+
+
+def own_hook(entry):
+    """True for a StopFailure entry that runs claude-switch hook, whatever path it was installed at: a command line that
+    ends in hook, or a program whose arguments do."""
+    hooks = entry.get("hooks") if isinstance(entry, dict) else None
+    for hook in hooks if isinstance(hooks, list) else []:
+        command = hook.get("command") if isinstance(hook, dict) else None
+        arguments = hook.get("args") if isinstance(hook, dict) else None
+        if isinstance(command, str) and command.endswith(" hook") and "claude-switch" in command:
+            return True
+        if isinstance(arguments, list) and arguments[-1:] == ["hook"] \
+                and any("claude-switch" in str(part) for part in arguments):
+            return True
+    return False
+
+
+def stop_failures(settings):
+    """The StopFailure entries of SETTINGS, [] when there are none."""
+    entries = dig(settings, "hooks", "StopFailure")
+    return entries if isinstance(entries, list) else []
+
+
+def hook_in_settings():
+    """True when settings.json holds a StopFailure hook of claude-switch."""
+    return any(own_hook(entry) for entry in stop_failures(settings_data()))
+
+
+def hook_current():
+    """True when that hook is the one of this claude-switch, as set_auto_hook writes it."""
+    wanted = hook_handler()
+    for entry in stop_failures(settings_data()):
+        hooks = entry.get("hooks") if isinstance(entry, dict) else None
+        if isinstance(hooks, list) and len(hooks) == 1 and isinstance(hooks[0], dict) \
+                and entry.get("matcher") == HOOK_MATCHER and hooks[0].get("asyncRewake") is True \
+                and hooks[0].get("command") == wanted["command"] and hooks[0].get("args") == wanted.get("args"):
+            return True
+    return False
+
+
+def set_auto_hook(on):
+    """Adds the StopFailure hook of claude-switch to settings.json, or takes it out. Other hooks stay."""
+    settings = settings_to_change()
+    hooks = alt(dig(settings, "hooks"), {}) if isinstance(settings, dict) else None
+    if not isinstance(hooks, dict):
+        die("~/.claude/settings.json can't be read as JSON, nothing changed.")
+    kept = [entry for entry in stop_failures(settings) if not own_hook(entry)]
+    if on:
+        hooks["StopFailure"] = kept + [{"matcher": HOOK_MATCHER, "hooks": [hook_handler()]}]
+    elif kept:
+        hooks["StopFailure"] = kept
+    else:
+        hooks.pop("StopFailure", None)
+    if hooks:
+        settings["hooks"] = hooks
+    else:
+        settings.pop("hooks", None)
+    write_settings(settings)
+
+
+def auto_order():
+    """The order the kinds of account rank in, as words: ultra key max by default."""
+    with contextlib.suppress(OSError, IndexError):
+        order = ORDER_FILE.read_text(encoding="utf-8").splitlines()[0].split()
+        if order:
+            return order
+    return list(DEFAULT_ORDER)
+
+
+def order_text():
+    """The same, as a person reads it."""
+    words = {"ultra": "Ultra subscriptions", "key": "API and gateway keys", "max": "Max and the other plans"}
+    return ", then ".join(words[kind] for kind in auto_order() if kind in words)
+
+
+def set_auto_order(kinds):
+    """Puts KINDS first, in that order, and the kinds left out after them in the default order."""
+    order = []
+    for kind in kinds:
+        kind = kind.lower()
+        kind = "key" if kind == "api" else kind
+        if kind not in DEFAULT_ORDER:
+            die(f"{kind} is not a kind of account: ultra, max or key.")
+        if kind in order:
+            die(f"{kind} is twice in the order.")
+        order.append(kind)
+    order += [kind for kind in DEFAULT_ORDER if kind not in order]
+    make_store()
+    write_text(ORDER_FILE, " ".join(order) + "\n")
+
+
+def watch_enable(on):
+    """Starts or stops the watch, True when that went: its systemd timer, or on Windows the scheduled task install.ps1
+    registers."""
+    if WINDOWS:
+        command = [shutil.which("schtasks") or "schtasks", "/Change", "/TN", WATCH_TASK, "/ENABLE" if on else "/DISABLE"]
+    else:
+        command = ["systemctl", "--user", "enable" if on else "disable", "--now", WATCH_TIMER]
+    try:
+        return subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              creationflags=NO_WINDOW, timeout=60).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def cmd_auto(arguments):
+    """Turns automatic switching on or off, says how it stands, or sets the order. [on|off|order [KIND...]]"""
+    first = arguments[0] if arguments else ""
+    if first != "order" and len(arguments) > 1:
+        die("Usage: claude-switch auto [on|off|order [KIND...]]")
+    if first == "":
+        auto_status()
+    elif first == "order":
+        kinds = arguments[1:]
+        if len(kinds) > 3:
+            die("Usage: claude-switch auto order [KIND...], a KIND is ultra, max or key.")
+        if not kinds:
+            print(f"Automatic switching ranks the accounts in this order: {order_text()}.")
+            return
+        set_auto_order(kinds)
+        print(f"Automatic switching ranks the accounts in this order now: {order_text()}.")
+        if auto_on() and not route():
+            print("No account has room now.")
+    elif first == "on":
+        if helper_command(USAGE_HELPER) is None:
+            die(f"usage.py is not in ~/.local/share/claude-switch, run {'install.ps1' if WINDOWS else 'install.sh'} "
+                "first.")
+        if not hook_current():
+            set_auto_hook(True)
+        make_store()
+        write_text(AUTO_FLAG, "")
+        HOLD.unlink(missing_ok=True)
+        if not watch_enable(True):
+            if WINDOWS:
+                warn(f"The task {WATCH_TASK} didn't start, so only a limit a session meets switches. install.ps1 "
+                     f"registers it, then: schtasks /Change /TN {WATCH_TASK} /ENABLE")
+            else:
+                warn(f"{WATCH_TIMER} didn't start, so only a limit a session meets switches. Start it with: "
+                     f"systemctl --user enable --now {WATCH_TIMER}")
+        print("Automatic switching is on: the machine goes to the best account with room, every 5 minutes while a "
+              "session is open and as soon as a session meets a limit.")
+        if not route():
+            print("No account has room now.")
+        elif not ROUTED_TO and active_file() is not None:
+            print(f"It stays on {read_account(active_file()).label}, the best account with room.")
+    elif first == "off":
+        if hook_in_settings():
+            set_auto_hook(False)
+        AUTO_FLAG.unlink(missing_ok=True)
+        HOLD.unlink(missing_ok=True)
+        watch_enable(False)
+        print("Automatic switching is off.")
+    else:
+        die("Usage: claude-switch auto [on|off|order [KIND...]]")
+
+
+def usage_helper(*arguments):
+    """What usage.py says to ARGUMENTS, as (status, output), 127 when it is not installed. Its errors go nowhere."""
+    command = helper_command(USAGE_HELPER)
+    if command is None:
+        return 127, ""
+    try:
+        result = subprocess.run(command + [str(argument) for argument in arguments], stdin=subprocess.DEVNULL,
+                                capture_output=True, creationflags=NO_WINDOW, timeout=300)
+    except (OSError, subprocess.TimeoutExpired):
+        return 127, ""
+    return result.returncode, result.stdout.decode("utf-8", "replace")
+
+
+def best_of(files, hold=None):
+    """The account of FILES the machine should be on, the one HOLD names while it has room, None when none has
+    room."""
+    status, output = usage_helper("best", *(["--hold", hold] if hold is not None else []), "--order",
+                                  ",".join(auto_order()), *files)
+    lines = output.splitlines()
+    return pathlib.Path(lines[0]) if status == 0 and lines else None
+
+
+def auto_status():
+    if not auto_on():
+        print("Automatic switching is off. Turn it on with: claude-switch auto on")
+        return
+    print("Automatic switching is on: the machine goes to the best account with room, every 5 minutes while a session "
+          "is open and as soon as a session meets a limit.")
+    print(f"It ranks the accounts in this order: {order_text()}.")
+    if not hook_in_settings():
+        warn("~/.claude/settings.json lost the hook that moves a session on: claude-switch auto on puts it back.")
+    held = held_file()
+    if held is not None:
+        print(f"{read_account(held).label} was chosen by hand, it stays until it runs out.")
+    files = accounts()
+    usage_helper("read", "--timeout", "5", *files)
+    best = best_of(files)
+    if best is not None:
+        print(f"The best account with room now is {read_account(best).label}.")
+    else:
+        print("No account has room now.")
+
+
+def nothing_left():
+    """Once a day at most: every account is out."""
+    status, first = usage_helper("first", *accounts())
+    first = first.strip() if status == 0 else ""
+    notify_once("nothing", "No Claude account has room", f"The first to have room again: {first}." if first else "")
+
+
+def rotate_log():
+    """The log of automatic switching keeps its last lines."""
+    with contextlib.suppress(OSError):
+        if AUTO_LOG.stat().st_size > 1048576:
+            lines = AUTO_LOG.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+            write_text(AUTO_LOG, "".join(lines[-2000:]))
+
+
+@contextlib.contextmanager
+def to_log():
+    """What claude-switch and its helpers say goes to ~/.claude-accounts/.auto.log meanwhile, as all a hook says but its
+    last sentence does."""
+    global LOGGING
+    if LOGGING is not None:
+        yield
+        return
+    make_store()
+    saved = sys.stdout, sys.stderr
+    for stream in saved:
+        with contextlib.suppress(Exception):
+            stream.flush()
+    with open(AUTO_LOG, "a", encoding="utf-8", errors="replace", buffering=1) as log:
+        sys.stdout = sys.stderr = LOGGING = log
+        try:
+            yield
+        finally:
+            LOGGING = None
+            sys.stdout, sys.stderr = saved
+
+
+def route():
+    """Puts the machine on the best account that has room, when the active one isn't that account, and says so.
+    ROUTED_TO and ROUTED_WHY tell where it went and why. False when no account has room."""
+    global AUTO, ROUTED_TO, ROUTED_WHY
+    ROUTED_TO = ROUTED_WHY = ""
+    if LOGGING is None:
+        rotate_log()
+    active = active_file()
+    files = accounts()
+    # Younger than the 5 minutes between two runs of the task, so each run reads.
+    usage_helper("read", "--max-age", "240", "--timeout", "10", *files)
+    hold = held_file()
+    best = best_of(files, hold)
+    if best is None:
+        nothing_left()
+        return False
+    # A hold ends with its account's room.
+    if hold is not None and best != hold:
+        HOLD.unlink(missing_ok=True)
+    if best == active:
+        return True
+    ROUTED_TO = read_account(best).label
+    if active is None:
+        ROUTED_WHY = "no account was active"
+    else:
+        status, why = usage_helper("why", active)
+        if status == 0 and why.strip():
+            ROUTED_WHY = f"{read_account(active).label} {why.strip()}"
+        else:
+            ROUTED_WHY = f"{ROUTED_TO} is the best account with room"
+    AUTO = True
+    try:
+        with to_log():
+            switch_to(best)
+    finally:
+        AUTO = False
+    print(f"Switched to {ROUTED_TO}: {ROUTED_WHY}.")
+    notify(f"Switched to {ROUTED_TO}", f"{ROUTED_WHY}.")
+    return True
+
+
+def cmd_watch(arguments):
+    """The task runs this every 5 minutes. Without automatic switching or an open session it never gets here."""
+    if arguments:
+        die("Usage: claude-switch watch")
+    route()
+
+
+def may_wake(session):
+    """A session is woken 3 times in 10 minutes at most, so one every account refuses doesn't loop."""
+    if not session:
+        return True
+    since = now_ms() - 600000
+    try:
+        times = (WOKEN / session).read_text(encoding="utf-8").split()
+    except OSError:
+        times = []
+    return sum(1 for moment in times if moment.isdigit() and int(moment) > since) < 3
+
+
+def note_wake(session):
+    if not session:
+        return
+    WOKEN.mkdir(parents=True, exist_ok=True)
+    for old in WOKEN.iterdir():
+        with contextlib.suppress(OSError):
+            if old.is_file() and time.time() - old.stat().st_mtime > 86400:
+                old.unlink()
+    with open(WOKEN / session, "a", encoding="utf-8") as handle:
+        handle.write(f"{now_ms()}\n")
+
+
+def iso_ms(value):
+    """The time an ISO 8601 date names, in milliseconds, None when it names none."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip().replace("Z", "+00:00").replace("z", "+00:00")
+    # Python before 3.11 takes 3 or 6 digits of a second only.
+    if "." in text:
+        head, _, rest = text.partition(".")
+        digits = len(rest) - len(rest.lstrip("0123456789"))
+        text = f"{head}.{(rest[:digits] + '000000')[:6]}{rest[digits:]}"
+    try:
+        moment = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=datetime.timezone.utc)
+    return int(moment.timestamp() * 1000)
+
+
+def tail_lines(path, count):
+    """The last COUNT lines of PATH, read from its end."""
+    with open(path, "rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        handle.seek(max(0, handle.tell() - 262144))
+        return handle.read().decode("utf-8", "replace").splitlines()[-count:]
+
+
+def failed_at(transcript):
+    """When the request of the session failed, in milliseconds: the API error its transcript ends on, when that one is
+    from the last minute, else a moment before this run started."""
+    when = None
+    with contextlib.suppress(OSError):
+        for line in tail_lines(transcript, 50) if transcript else []:
+            with contextlib.suppress(ValueError):
+                entry = json.loads(line)
+                if isinstance(entry, dict) and entry.get("isApiErrorMessage") is True and entry.get("timestamp"):
+                    when = entry["timestamp"]
+    moment = iso_ms(when)
+    return moment if moment is not None and moment > STARTED - 60000 else STARTED - 1500
+
+
+def cmd_hook(arguments):
+    """Claude Code runs this when a turn ends on an API error, in the background, with the error on stdin. When the
+    active account met a limit, the machine moves to the best account with room, and exit 2 wakes the session with a
+    sentence on stderr for Claude, which sends its request again. claude-switch says the rest in
+    ~/.claude-accounts/.auto.log, since Claude reads the hook's stderr."""
+    raw = sys.stdin.buffer.read(1048576) if sys.stdin is not None else b""
+    if not auto_on():
+        return 0
+    try:
+        data = json.loads(raw.decode("utf-8-sig", "replace"))
+    except ValueError:
+        data = {}
+    data = data if isinstance(data, dict) else {}
+    error = data.get("error") if isinstance(data.get("error"), str) else ""
+    text = " ".join(value for value in (data.get("last_assistant_message"), data.get("error_details"))
+                    if isinstance(value, str))
+    if error in ("rate_limit", "billing_error", "authentication_failed"):
+        reason = error
+    elif error == "unknown":
+        # A gateway's budget comes back as an unknown error, only its words tell it.
+        if not BUDGET_WORDS.search(text.lower()):
+            return 0
+        reason = "budget"
+    else:
+        return 0
+    session = re.sub(r"[^A-Za-z0-9-]", "", data.get("session_id") if isinstance(data.get("session_id"), str) else "")
+    if not may_wake(session):
+        return 0
+    active = active_file()
+    if active is None:
+        return 0
+    try:
+        switched = int(SWITCHED.read_text(encoding="utf-8").strip() or 0)
+    except (OSError, ValueError):
+        switched = 0
+    transcript = data.get("transcript_path") if isinstance(data.get("transcript_path"), str) else ""
+    if switched > failed_at(transcript):
+        # The machine moved after the request failed, by another session's hook or by hand.
+        message = f"claude-switch has moved this machine to {read_account(active).label} since the request failed."
+    else:
+        if usage_helper("refuse", active, reason, text)[0] != 0:
+            return 0
+        # Nothing has room: Claude Code waits for the limit to reset by itself.
+        if not route() or not ROUTED_TO:
+            return 0
+        message = f"claude-switch moved this machine to {ROUTED_TO}: {ROUTED_WHY}."
+    note_wake(session)
+    print(f"{message} The request that failed can go out again now: carry on with the task where it stopped.",
+          file=HOOK_ERR or sys.stderr, flush=True)
+    return 2
+
+
+def start_hook_log():
+    """Claude reads what the hook says: everything but its last sentence goes to the log."""
+    global HOOK_ERR, LOGGING
+    make_store()
+    rotate_log()
+    HOOK_ERR = sys.stderr
+    LOGGING = open(AUTO_LOG, "a", encoding="utf-8", errors="replace", buffering=1)
+    sys.stdout = sys.stderr = LOGGING
+
+
+def read_left():
+    """Brings the readings up to date and fills LEFT_OF with what each account has left."""
+    LEFT_OF.clear()
+    if helper_command(USAGE_HELPER) is None:
+        return
+    files = accounts()
+    usage_helper("read", "--timeout", "5", *files)
+    for line in usage_helper("left", *files)[1].splitlines():
+        file, tab, text = line.partition("\t")
+        if tab:
+            LEFT_OF[pathlib.Path(file)] = text
+
+
 def cmd_list():
     live = active_file()
-    print(f"  {'ACCOUNT':<28} {'EMAIL':<36} {'PLAN':<6} UNTIL")
+    read_left()
+    print(f"  {'ACCOUNT':<28} {'EMAIL':<36} {'PLAN':<6} {'UNTIL':<11} LEFT")
     for file in accounts():
         account = read_account(file)
         marker = "*" if file == live else " "
-        print(f"{marker} {account.label:<28} {account.email:<36} {account.plan:<6} {account.ends}")
+        print(f"{marker} {account.label:<28} {account.email:<36} {account.plan:<6} {account.ends:<11} "
+              f"{LEFT_OF.get(file) or '-'}")
     remind_unkept_key()
     if live is not None:
         remind_overrides(live)
@@ -1595,6 +2168,7 @@ def cmd_prompt():
         unlock_store()
         live = active_file()
         files = accounts()
+        read_left()
         print("\nClaude Code accounts\n")
         for row, file in enumerate(files, 1):
             account = read_account(file)
@@ -1603,7 +2177,7 @@ def cmd_prompt():
             if account.plan == "key":
                 when = ""
             here = "active" if file == live else ""
-            print(f"  {row:2d}) {shown:<56} {account.plan:<6} {when:<17} {here}")
+            print(f"  {row:2d}) {shown:<56} {account.plan:<6} {when:<17} {LEFT_OF.get(file) or '-':<22} {here}")
         remind_unkept_key()
         if live is not None:
             remind_overrides(live)
@@ -1623,6 +2197,7 @@ def cmd_prompt():
         elif is_row(choice, len(files)):
             lock_store()
             switch_to(files[int(choice) - 1])
+            hold_account(files[int(choice) - 1])
             return
         else:
             print("Type a number from the list, a, r or q.")
@@ -1638,6 +2213,12 @@ def main(arguments):
         return 2
     if not shutil.which("claude"):
         die("claude is not in the PATH.")
+    if first == "watch":
+        # The task runs this every 5 minutes: nothing to do without automatic switching or an open session.
+        if not auto_on() or usage_helper("sessions")[0] != 0:
+            return 0
+    elif first == "hook":
+        start_hook_log()
     lock_store()
     if credential_manager():
         if first != "list":
@@ -1673,10 +2254,18 @@ def main(arguments):
         if len(arguments) != 3:
             die("Usage: claude-switch rename NAME NEW_NAME")
         rename_account(require_account(arguments[1]), arguments[2])
+    elif first == "auto":
+        cmd_auto(arguments[1:])
+    elif first == "watch":
+        cmd_watch(arguments[1:])
+    elif first == "hook":
+        return cmd_hook(arguments[1:])
     else:
         if len(arguments) != 1:
             die("Usage: claude-switch NAME")
-        switch_to(require_account(first))
+        file = require_account(first)
+        switch_to(file)
+        hold_account(file)
         remind_signins()
     return 0
 

@@ -110,6 +110,12 @@ try {
     Check 'key add --like: the gateway keys only' (((Complete 'claude-switch key add new --like ') -join ',') -eq 'gw')
     Check 'key add, another option: nothing of ours' (-not (Offers-Ours (Complete 'claude-switch key add new --base-url ')))
     Check 'key import: nothing of ours for the new name' (-not (Offers-Ours (Complete 'claude-switch key import ')))
+    # Automatic switching.
+    Check 'first word: auto' ($first -contains 'auto')
+    Check 'auto: on, off and order' (((Complete 'claude-switch auto ') -join ',') -eq 'on,off,order')
+    Check 'auto on: nothing of ours' (-not (Offers-Ours (Complete 'claude-switch auto on ')))
+    Check 'auto order: the kinds of account' (((Complete 'claude-switch auto order ') -join ',') -eq 'ultra,max,key')
+    Check 'auto order: the next kind' (((Complete 'claude-switch auto order max u') -join ',') -eq 'ultra')
     # A profile may turn on Set-StrictMode, where reading a property an object lacks throws.
     Set-StrictMode -Version Latest
     try {
@@ -128,7 +134,8 @@ try {
     Check 'a name with a quote and a $: quoted, never run' (
         ((Complete 'claude-switch it') -join ',') -eq "'it''s `$(New-Item -ItemType File PWNED)'" -and
         -not (Test-Path -LiteralPath (Join-Path $scratch 'PWNED')))
-    Check 'a name with a comma: quoted' (((Complete 'claude-switch a') -join ' ') -eq "'a,b'")
+    Check 'a name with a comma: quoted' (
+        (((Complete 'claude-switch a') | Where-Object { $_ -ne 'auto' }) -join ' ') -eq "'a,b'")
     Check 'claude-switch.cmd: the same' ((Complete 'claude-switch.cmd lu').Count -eq 2)
     Check 'the case of the typed word: ignored' ((Complete 'claude-switch LU').Count -eq 2)
 } finally {

@@ -80,11 +80,13 @@ A new guard comes with its mutant, and with the test that kills it.
 `windows/tests/run.sh` runs the suites above against the Windows port, on Linux. On Windows,
 `windows\tests\run.ps1` runs the suites of what only Windows does: Desktop's folders and processes, the
 settings that go over to the next account, Desktop's Local Storage read and written as LevelDB does, the
-named pipe of the Chrome host, and the PowerShell files. It also runs `windows/tests/test-keys.py`, the
-checks of `test-keys.sh` with a stand-in claude, since that suite can't run on Windows, and what only
-Windows does to a gateway key. They use a scratch profile, stand-in processes and a pipe of their own,
+named pipe of the Chrome host, and the PowerShell files. It also runs `windows/tests/test-keys.py` and
+`windows/tests/test-auto.py`, the checks of `test-keys.sh` and `test-auto.sh` with a stand-in claude and a
+stand-in usage endpoint, since those suites can't run on Windows, and what only Windows does to a gateway
+key and to automatic switching. They use a scratch profile, stand-in processes and a pipe of their own,
 and never touch the real Desktop. `windows\tests\mutants.py` breaks the Windows guards and those of the
-gateway keys one at a time. [windows/README.md](../windows/README.md#tests) has the details.
+gateway keys and of automatic switching one at a time. [windows/README.md](../windows/README.md#tests) has
+the details.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File windows\tests\run.ps1
