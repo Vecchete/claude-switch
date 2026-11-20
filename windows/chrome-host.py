@@ -23,6 +23,8 @@ a second profile or browser that loads the extension takes the switch over from 
 one keeps it. Everything else is the same as share/chrome-host.py, which the suites in tests/ check here too.
 
     chrome-host.py --switch ACCOUNT   put claude.ai in Chrome on ACCOUNT, an accountUuid
+    chrome-host.py --back ACCOUNT     the same after a sign-in, when a session of ACCOUNT is saved: else Chrome
+                                      stays on the account open there, rather than signed out
     chrome-host.py --status           print the account open in Chrome and the saved ones
 """
 
@@ -409,12 +411,16 @@ def labels():
 
 
 def main(argv):
-    if argv[1:2] == ["--switch"] and len(argv) == 3:
+    if argv[1:2] in (["--switch"], ["--back"]) and len(argv) == 3:
         account = argv[2]
         if not UUID.fullmatch(account):
             print(f"claude.ai in Chrome: {account} is not an account.", file=sys.stderr)
             return 1
         label = labels().get(account, account)
+        # Checked here and not by the host, which may be one Chrome started before this version.
+        if argv[1] == "--back" and load(account) is None:
+            print(f"claude.ai in Chrome: no session saved for {label}, it stays on the account open there.")
+            return 0
         try:
             reply = request({"switch": account})
         except (FileNotFoundError, ConnectionRefusedError) as error:
@@ -457,7 +463,7 @@ def main(argv):
         return 0
     if argv[1:2] and argv[1].startswith("chrome-extension://"):
         return serve()
-    print("Usage: chrome-host.py --switch ACCOUNT | --status", file=sys.stderr)
+    print("Usage: chrome-host.py --switch ACCOUNT | --back ACCOUNT | --status", file=sys.stderr)
     return 2
 
 

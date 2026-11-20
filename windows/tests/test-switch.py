@@ -107,6 +107,7 @@ try:
     result = run("login", FAKE_EMAIL="b@example.com", FAKE_TOKEN="B", FAKE_ACCOUNT="acct-b", FAKE_ORG="org-b-0000")
     check("login adds the account", result.returncode == 0 and len(list(store.glob("*.json"))) == 2)
     check("login doesn't switch", read(credentials)["claudeAiOauth"]["accessToken"] == "A-access")
+    check("login: claude.ai in Chrome back on the live account", log("web")[-1:] == ["--back acct-a"])
     check("login leaves no folder", leftovers() == [])
 
     run("rename", "b@example.com", "second")
@@ -234,6 +235,15 @@ try:
     result = run("a@example.com", FAKE_DESKTOP_STATUS="3")
     check("open Desktop, no terminal: left alone, said how to bring it along",
           "Close it and run claude-switch a@example.com to bring it along." in result.stdout)
+
+    # A sign-in with --switch puts the machine on the new account, and claude auth login never sees --switch.
+    result = run("login", "--switch", FAKE_EMAIL="c@example.com", FAKE_TOKEN="C", FAKE_ACCOUNT="acct-c",
+                 FAKE_ORG="org-c-0000")
+    check("login --switch: added and switched to", result.returncode == 0 and "Added c@example.com." in result.stdout
+          and "Switched to c@example.com." in result.stdout and read(credentials)["claudeAiOauth"]["accessToken"] == "C-access")
+    check("login --switch: not passed to claude auth login", json.loads(log("calls")[-1])["args"] == ["auth", "login"])
+    check("login --switch: Chrome goes to it, not back", log("web")[-2:] == ["--switch acct-a", "--switch acct-c"])
+    check("login --switch: Desktop goes to it", log("desktop")[-1:] == ["switch acct-c"])
 
     if WINDOWS:
         # A Claude Code that keeps its login in the Credential Manager is never switched: the files aren't its login.

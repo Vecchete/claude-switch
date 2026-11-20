@@ -156,18 +156,21 @@ Usage:
   claude-switch                          Prompt to switch, add or rename.
   claude-switch NAME                     Switch the whole machine to NAME, a name or an email.
   claude-switch list                     Print the accounts and what each has left. * marks the active one.
-  claude-switch login [ACCOUNT] [OPTIONS]
-                                         Sign in an account and keep it here. It doesn't switch.
-                                         With ACCOUNT, a name or an email already here, it renews
-                                         that one: claude.ai in Chrome goes to it first and the sign-in
-                                         page asks for its email. OPTIONS go to claude auth login.
+  claude-switch login [ACCOUNT] [--switch] [OPTIONS]
+                                         Sign in an account and keep it here. The machine stays on its
+                                         account, and claude.ai in Chrome goes back to it when it can,
+                                         unless --switch puts the machine on the new one. With ACCOUNT,
+                                         a name or an email already here, it renews that one: claude.ai
+                                         in Chrome goes to it first and the sign-in page asks for its
+                                         email. OPTIONS go to claude auth login.
   claude-switch key import NAME          Keep the gateway key now in ~/.claude/settings.json as the
                                          account NAME: its token, URL and model names.
-  claude-switch key add NAME [--like KEY] [--api-key] [--base-url URL] [--env VAR=VALUE]...
-                                         Keep a gateway key as the account NAME. The token is asked
-                                         without echo, or read from the standard input. --like takes
-                                         the URL and model names of KEY, --api-key sends the token as
-                                         an Anthropic API key, x-api-key, rather than a bearer token.
+  claude-switch key add NAME [--switch] [--like KEY] [--api-key] [--base-url URL] [--env VAR=VALUE]...
+                                         Keep a gateway key as the account NAME, and switch to it with
+                                         --switch. The token is asked without echo, or read from the
+                                         standard input. --like takes the URL and model names of KEY,
+                                         --api-key sends the token as an Anthropic API key, x-api-key,
+                                         rather than a bearer token.
   claude-switch key renew NAME           Give the gateway key NAME a new token, asked the same way.
   claude-switch key remove NAME          Forget the gateway key NAME, and take it out of
                                          ~/.claude/settings.json when it is active.
@@ -200,9 +203,14 @@ A sign-in lasts about 28 days, and only a new sign-in moves its end. From 7 days
 prompt and a switch say when it ends, with the claude-switch login that renews it.
 
 The best account with room is an Ultra subscription first, then a key, then another plan, unless
-claude-switch auto order says otherwise: only the weekly limit counts. An account that stops a session
-waits until its limit resets. A switch typed by hand stays while automatic switching is on, until that
-account runs out.
+claude-switch auto order says otherwise: only the weekly limit counts. Between accounts of the same
+kind, the one the machine is on stays until it runs out. An account that stops a session waits until
+its limit resets. A switch typed by hand stays while automatic switching is on, until that account
+runs out.
+
+Adding an account doesn't switch to it, unless with --switch. With automatic switching on, the new
+account ranks with the others: added without --switch, the machine goes to it at once when it comes
+first, and added with --switch, the next check moves the machine on when another account comes first.
 
 Don't use /logout on an account you want to keep: it revokes the login saved here too.
 To forget an account, remove its file in ~/.claude-accounts, or a gateway key with claude-switch key
@@ -732,7 +740,7 @@ def note_switch():
 
 
 def key_usage():
-    die("Usage: claude-switch key import NAME, key add NAME [--like KEY] [--api-key] [--base-url URL] "
+    die("Usage: claude-switch key import NAME, key add NAME [--switch] [--like KEY] [--api-key] [--base-url URL] "
         "[--env VAR=VALUE]..., key renew NAME or key remove NAME")
 
 
@@ -790,6 +798,7 @@ def key_new(action, name, options):
     file = key_file(name)
     if file.exists():
         die(f"Another account is kept as {file.name}, choose another name.")
+    switch = False
     if action == "import":
         if options:
             key_usage()
@@ -805,6 +814,10 @@ def key_new(action, name, options):
         while options:
             if options[0] == "--api-key":
                 api = True
+                options = options[1:]
+                continue
+            if options[0] == "--switch":
+                switch = True
                 options = options[1:]
                 continue
             if len(options) < 2:
@@ -851,7 +864,7 @@ def key_new(action, name, options):
     else:
         key_usage()
     store_key(file, data)
-    print(f"Kept the gateway key {name}. Switch to it with: claude-switch {quote(name)}")
+    after_adding(file, switch, f"Kept the gateway key {name}.")
 
 
 def key_renew(who):
@@ -1076,6 +1089,17 @@ def web_back():
         web_switch(live)
 
 
+def web_restore():
+    """After a sign-in that added an account and didn't switch: claude.ai in Chrome back on the account Claude Code is
+    on, since the browser may have signed in the new one there. Without a session saved for that account the companion
+    leaves Chrome as it is, because putting back none would sign Chrome out."""
+    live = live_file()
+    helper = helper_command(CHROME_HOST)
+    account = dig(load_or_none(live), "oauthAccount", "accountUuid") if helper and live is not None else None
+    if account and run(helper + ["--back", account]) != 0:
+        warn("Put claude.ai in Chrome back on its account by hand this time.")
+
+
 def terminal():
     return bool(sys.stdin and sys.stdout and sys.stdin.isatty() and sys.stdout.isatty())
 
@@ -1285,9 +1309,11 @@ def switch_to(file):
 
 
 def cmd_login(arguments):
-    """Signs in beside the store and not in ~/.claude, so the live account changes only on a switch. No session ever
-    runs from that folder, it's gone when this ends."""
+    """Signs in beside the store and not in ~/.claude, so the live account changes only on a switch, the one --switch
+    asks for once the account is kept. No session ever runs from that folder, it's gone when this ends."""
     global SIGNIN, WEB_AWAY
+    switch = "--switch" in arguments
+    arguments = [argument for argument in arguments if argument != "--switch"]
     wanted = wanted_email = None
     if arguments and not arguments[0].startswith("-"):
         wanted = require_account(arguments[0])
@@ -1321,12 +1347,18 @@ def cmd_login(arguments):
              f"{wanted_email} is unchanged.")
     if WEB_AWAY:
         web_back()
+    elif not known and not switch:
+        web_restore()
     if known:
         if file == live_file():
             lock_live()
             apply_account(file)
             release_locks()
-        print(f"{account.label} was already here, its login is renewed.")
+        renewed = f"{account.label} was already here, its login is renewed."
+        if switch:
+            after_adding(file, True, renewed)
+        else:
+            print(renewed)
         return
     unlock_store()
     if sys.stdin and sys.stdin.isatty():
@@ -1345,7 +1377,28 @@ def cmd_login(arguments):
                 break
             print(problem)
         account = read_account(file)
-    print(f"Added {account.label}. Switch to it with: claude-switch {quote(account.label)}")
+    after_adding(file, switch, f"Added {account.label}.")
+
+
+def after_adding(file, switch, done):
+    """DONE says the account FILE was kept. With SWITCH the machine goes to it now, and nothing holds it there: it's
+    no choice by hand, so automatic switching moves the machine on at its next check when another account comes
+    first. Without, the machine stays, and automatic switching, when it is on, ranks the new account with the others
+    at once: the machine goes to it when it comes first."""
+    if switch:
+        print(done)
+        lock_store()
+        switch_to(file)
+        if auto_on():
+            HOLD.unlink(missing_ok=True)
+            print("Automatic switching is on: at its next check it goes to the best account with room, which may be "
+                  "another one.")
+    elif auto_on():
+        print(f"{done} Automatic switching ranks it with the others:")
+        lock_store()
+        route_and_say()
+    else:
+        print(f"{done} Switch to it with: claude-switch {quote(read_account(file).label)}")
 
 
 def rename_account(file, new):
@@ -1810,10 +1863,7 @@ def cmd_auto(arguments):
                      f"systemctl --user enable --now {WATCH_TIMER}")
         print("Automatic switching is on: the machine goes to the best account with room, every 5 minutes while a "
               "session is open and as soon as a session meets a limit.")
-        if not route():
-            print("No account has room now.")
-        elif not ROUTED_TO and active_file() is not None:
-            print(f"It stays on {read_account(active_file()).label}, the best account with room.")
+        route_and_say()
     elif first == "off":
         if hook_in_settings():
             set_auto_hook(False)
@@ -1838,10 +1888,11 @@ def usage_helper(*arguments):
     return result.returncode, result.stdout.decode("utf-8", "replace")
 
 
-def best_of(files, hold=None):
+def best_of(files, hold=None, active=None):
     """The account of FILES the machine should be on, the one HOLD names while it has room, None when none has
-    room."""
-    status, output = usage_helper("best", *(["--hold", hold] if hold is not None else []), "--order",
+    room. ACTIVE, the account the machine is on, goes before the others of its kind while it has room."""
+    status, output = usage_helper("best", *(["--hold", hold] if hold is not None else []),
+                                  *(["--active", active] if active is not None else []), "--order",
                                   ",".join(auto_order()), *files)
     lines = output.splitlines()
     return pathlib.Path(lines[0]) if status == 0 and lines else None
@@ -1861,7 +1912,7 @@ def auto_status():
         print(f"{read_account(held).label} was chosen by hand, it stays until it runs out.")
     files = accounts()
     usage_helper("read", "--timeout", "5", *files)
-    best = best_of(files)
+    best = best_of(files, active=active_file())
     if best is not None:
         print(f"The best account with room now is {read_account(best).label}.")
     else:
@@ -1917,7 +1968,7 @@ def route():
     # Younger than the 5 minutes between two runs of the task, so each run reads.
     usage_helper("read", "--max-age", "240", "--timeout", "10", *files)
     hold = held_file()
-    best = best_of(files, hold)
+    best = best_of(files, hold, active)
     if best is None:
         nothing_left()
         return False
@@ -1946,6 +1997,18 @@ def route():
             "along.") if DESKTOP_KEPT else ""
     notify(f"Switched to {ROUTED_TO}", f"{ROUTED_WHY}.{kept}")
     return True
+
+
+def route_and_say():
+    """route(), and what came of it when the machine stays."""
+    if not route():
+        print("No account has room now.")
+    elif not ROUTED_TO and active_file() is not None:
+        active = active_file()
+        if held_file() == active:
+            print(f"It stays on {read_account(active).label}, chosen by hand, until it runs out.")
+        else:
+            print(f"It stays on {read_account(active).label}, the best account with room.")
 
 
 def cmd_watch(arguments):
@@ -2148,8 +2211,9 @@ def prompt_rename(files):
 
 
 def prompt_add():
-    """Asks whether the new account is a subscription or a key, then signs it in or keeps the key. Each runs as a
-    claude-switch of its own, so a refusal ends that run and not the prompt."""
+    """Asks whether the new account is a subscription or a key, and whether the machine goes to it once it's in, then
+    signs it in or keeps the key. Each runs as a claude-switch of its own, so a refusal ends that run and not the
+    prompt."""
     print("\n   s) A subscription, signed in with the browser\n   k) An API key or a gateway key\n")
     try:
         kind = input("Which kind of account? ")
@@ -2172,6 +2236,8 @@ def prompt_add():
             if kind:
                 print("Type s or k.")
             return
+        if input("Switch to it once it's added? [y/N] ").strip() in ("y", "Y", "yes", "Yes", "YES"):
+            command.append("--switch")
     except EOFError:
         return
     run([sys.executable, "-I", str(pathlib.Path(__file__).resolve()), *command])

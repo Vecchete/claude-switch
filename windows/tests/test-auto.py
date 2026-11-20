@@ -572,6 +572,51 @@ try:
           "Claude Desktop stays on its account: close it and run claude-switch a@example.com to bring it along."
           in log("notify"))
 
+    # Adding with automatic switching on: the new account ranks with the others at once, and between two accounts of
+    # the same kind the one the machine is on stays until it runs out.
+    usage_file(U, refused=True).unlink(missing_ok=True)
+    Server.answers[("/api/oauth/usage", "U-token")] = (200, week(30, now() + 2 * DAY))
+    stale(U)
+    run("watch")
+    check("adding: on the Ultra first", marked("ultra"))
+    Server.answers[("/api/oauth/usage", "U2-access")] = (200, week(10, now() + DAY))
+    count = len(Server.requests)
+    (state / "desktop").unlink(missing_ok=True)
+    result = run("login", FAKE_EMAIL="u2@example.com", FAKE_TOKEN="U2", FAKE_ACCOUNT="acct-u2", FAKE_ORG="org-u2-0000")
+    check("adding: the new account is read at once", result.returncode == 0 and requests_since(count, "U2-access"))
+    check("adding: says the machine stays", "Added u2@example.com. Automatic switching ranks it with the others:"
+          in result.stdout and "It stays on ultra, the best account with room." in result.stdout)
+    check("a tie: the Ultra in use stays before one whose week resets sooner", marked("ultra") and log("desktop") == "")
+    Server.answers[("/api/oauth/usage", "U-token")] = (200, week(100, now() + 2 * DAY))
+    stale(U)
+    run("watch")
+    check("a tie: the next Ultra once the one in use runs out", marked("u2@example.com"))
+    Server.answers[("/api/oauth/usage", "U-token")] = (200, week(5, now() + DAY // 2))
+    week_passed(U)
+    result = run("watch")
+    check("a tie: the Ultra in use stays, though another resets sooner", marked("u2@example.com") and out(result) == "")
+
+    # An account added with --switch is used at once, and nothing holds it there, not even the account a switch by hand
+    # held before: the next check moves the machine on when another account comes first.
+    run("a@example.com")
+    check("adding with --switch: a hold before", (store / ".hold").exists())
+    Server.answers[("/key/info", "G3-secret")] = (200, budget(1.0, now() + 10 * DAY))
+    result = run("key", "add", "gw3", "--base-url", f"http://127.0.0.1:{PORT}/gw3", "--switch", stdin="G3-secret\n")
+    check("adding with --switch: on the new key at once", env_token() == "G3-secret"
+          and "Kept the gateway key gw3." in result.stdout)
+    check("adding with --switch: nothing holds it, nor the account held before", not (store / ".hold").exists())
+    check("adding with --switch: says the next check may move on",
+          "at its next check it goes to the best account with room, which may be another one." in result.stdout)
+    # Neither Ultra is the one in use: the one whose week resets first goes first.
+    result = run("watch")
+    check("adding with --switch: the next check moves on to the best", marked("ultra") and env_token() == ""
+          and "Switched to ultra: " in result.stdout)
+    # Added without a switch while an account is held: it stays held.
+    run("a@example.com")
+    result = run("key", "add", "gw4", "--base-url", f"http://127.0.0.1:{PORT}/gw4", stdin="G4-secret\n")
+    check("adding while an account is held: it stays", marked("a@example.com")
+          and "It stays on a@example.com, chosen by hand, until it runs out." in result.stdout)
+
     # auto off: the hook and the watch go, the rest stays, with a hook whose program is the claude-switch.
     data = read(settings)
     data["hooks"]["StopFailure"].append({"matcher": "rate_limit", "hooks": [

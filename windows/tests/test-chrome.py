@@ -27,6 +27,7 @@ ORG_A = "aaaaaaaa-0000-4000-8000-00000000000a"
 ORG_B = "bbbbbbbb-0000-4000-8000-00000000000b"
 ACCOUNT_A = "aaaaaaaa-0000-4000-8000-0000000000a1"
 ACCOUNT_B = "bbbbbbbb-0000-4000-8000-0000000000b1"
+ACCOUNT_C = "cccccccc-0000-4000-8000-0000000000c1"
 NO_WINDOW = subprocess.CREATE_NO_WINDOW
 failures = []
 passes = 0
@@ -131,6 +132,11 @@ def host_status():
                           capture_output=True, text=True, encoding="utf-8", timeout=120, creationflags=NO_WINDOW)
 
 
+def host_back(account):
+    return subprocess.run([sys.executable, "-I", str(share / "chrome-host.py"), "--back", account], env=base,
+                          capture_output=True, text=True, encoding="utf-8", timeout=120, creationflags=NO_WINDOW)
+
+
 def wait_for(condition, seconds):
     deadline = time.monotonic() + seconds
     while not condition():
@@ -178,6 +184,16 @@ try:
     status = host_status().stdout
     check("status: the account open and the saved ones", "claude.ai in Chrome: a@example.com" in status
           and "bee" in status)
+
+    # A sign-in that added an account left claude.ai on it: --back puts back the live one when its session is saved,
+    # and leaves Chrome as it is when none is, rather than signed out.
+    jar[:] = web("b", ORG_B)
+    result = host_back(ACCOUNT_A)
+    check("back after a sign-in: claude.ai on the live account again", "switched to a@example.com" in result.stdout
+          and session(jar) == "session-a")
+    result = host_back(ACCOUNT_C)
+    check("back with no session saved: Chrome left as it is", result.returncode == 0
+          and "no session saved for" in result.stdout and session(jar) == "session-a")
 
     # A second profile that loads the extension waits until the first host is gone, then serves.
     second = web("b", ORG_B)

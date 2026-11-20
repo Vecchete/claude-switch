@@ -7,7 +7,9 @@ few things were never run there for real yet, see [Status](#status) and
 The port follows `bin/claude-switch`, `share/chrome-host.py`, `share/desktop.py` and `share/usage.py` as of
 commit 846289c, [gateway keys](../docs/gateway-keys.md) and [automatic switching](../docs/auto.md) included. When the Linux version changes, the port changes with it:
 `windows/tests/run.sh` says on Linux whether it still behaves the same, and `windows\tests\run.ps1` checks
-on Windows what only Windows does.
+on Windows what only Windows does. Two things came to the port first, and the Linux version follows: an
+account can be added with or without a switch to it, and two accounts of the same kind don't take turns,
+see [What differs from Linux](#what-differs-from-linux).
 
 A switch moves the same things as on Linux: the login of Claude Code, the claude.ai session in Chrome,
 the sign-in of Claude Desktop, and with the last two the Remote Control registration of each account. A
@@ -55,7 +57,8 @@ settings Claude Desktop keeps per account, which go over to the next account.
    `claude-switch key import NAME` or `claude-switch key add NAME`, see
    [Gateway keys](../docs/gateway-keys.md). In the prompt, `a` asks for the kind of account first: `s` signs
    in a subscription, and `k` keeps an API key or a gateway key. It asks for a name, the URL of the gateway
-   (Enter for the Anthropic API) and then the key. `claude-switch help` has the rest.
+   (Enter for the Anthropic API) and then the key. Last it asks whether to switch to the new account once
+   it's added, no by default. `claude-switch help` has the rest.
 
 ## Where things are
 
@@ -101,6 +104,14 @@ PowerShell does what only PowerShell does: the install, the Tab completion and t
 - `desktop.py` never quits the Desktop that runs it, through one of its Code sessions or its terminal, as on
   Linux: `switch` exits 6 there and says how to bring Desktop along. On Windows any Desktop among the parents
   of the process counts, where Linux looks for the Desktop that holds the folder.
+- Two things came to the port first, and the Linux version follows. Adding an account doesn't switch to it
+  unless you ask: `--switch` on `login` and `key add`, or yes to the last question of `a` in the prompt.
+  Without it, claude.ai in Chrome goes back to the active account once the sign-in is done, when its session
+  is saved, since the browser may have signed in the new account there. With automatic switching on, the
+  new account is ranked with the others at once, and one added with `--switch` is held by nothing, so the
+  next check moves the machine on when another account comes first. And between two accounts of the same
+  kind, the one the machine is on stays until it runs out, so one is used up before the next starts. When
+  the machine is on neither, the one whose week resets first still goes first.
 - Claude Desktop keeps one storage of its window for every account (Local Storage, Session Storage,
   IndexedDB, WebStorage), and settings files beside it. Much of what they hold is named after the account:
   the sections and groups of the sidebar, the order of the projects, the presets of the Code tab and their
@@ -200,24 +211,23 @@ suites of the Linux version against the port:
 | `tests/test-desktop.py` | `desktop.py` | 51 passed |
 
 Those runs came before the gateway keys and automatic switching. `windows/tests/run.sh` now runs
-`tests/test-keys.sh`, `tests/test-usage.py` and `tests/test-auto.sh` against the port too, which haven't run
-yet: the shell suites need `jq` and the Linux `claude`. On 2026-11-20, on Linux in WSL
-(Ubuntu 26.04, Python 3.14.4), `windows/tests/test-switch.py` passed 38 checks, `windows/tests/test-keys.py`
-145 and `windows/tests/test-auto.py` 81, with what only Linux does in place of what only Windows does.
-`tests/test-usage.py` passed 68 against `usage.py` with `TZ=UTC`. In the zone of the PC, CET, 5 of its
-checks fail against `share/usage.py` as well: the test builds the times it expects in its own zone, and runs
-`usage.py` in UTC.
+`tests/test-keys.sh`, `tests/test-usage.py` and `tests/test-auto.sh` against the port too. The shell suites
+need `jq` and the Linux `claude`, so they haven't run yet. On 2026-11-20, on Linux in WSL (Ubuntu 26.04,
+Python 3.14.4), the Python suites passed: `windows/tests/test-switch.py` 43 checks,
+`windows/tests/test-keys.py` 149 and `windows/tests/test-auto.py` 99, with what only Linux does in place of
+what only Windows does, and against the files of the port `tests/test-usage.py` 68, `tests/test-desktop.py`
+60, `tests/test-chrome-host.py` 55 and `tests/test-switch-chrome.py` 11.
 
 On Windows 11 Pro 26300, with Python 3.14.3 and Windows PowerShell 5.1, on 2026-11-20,
 `windows\tests\run.ps1` ran:
 
 | Suite | Run against | Checks |
 |---|---|---|
-| `windows/tests/test-switch.py` | `claude-switch.py` | 43 passed |
-| `windows/tests/test-keys.py` | `claude-switch.py` | 146 passed |
-| `windows/tests/test-auto.py` | `claude-switch.py` and `usage.py` | 82 passed |
-| `windows/tests/test-desktop.py` | `desktop.py` and `localstorage.py` | 86 passed |
-| `windows/tests/test-chrome.py` | `claude-switch.py` and `chrome-host.py` | 14 passed |
+| `windows/tests/test-switch.py` | `claude-switch.py` | 48 passed |
+| `windows/tests/test-keys.py` | `claude-switch.py` | 150 passed |
+| `windows/tests/test-auto.py` | `claude-switch.py` and `usage.py` | 100 passed |
+| `windows/tests/test-desktop.py` | `desktop.py` and `localstorage.py` | 88 passed |
+| `windows/tests/test-chrome.py` | `claude-switch.py` and `chrome-host.py` | 16 passed |
 | `windows/tests/test-powershell.ps1` | `install.ps1`, `completion.ps1`, `notify.ps1`, `tests/run.ps1` | 46 passed |
 
 `windows/tests/mutants.py` breaks the Windows guards, those of the gateway keys, those of automatic switching
@@ -296,6 +306,8 @@ What a tester on Windows can still check:
 7. With automatic switching on, let a session in a terminal meet the weekly limit of its account: the
    machine should move to the next account and the session carry on by itself. Then let the watch task
    bring the machine back once that limit resets, with Desktop open.
+8. Add a subscription from the prompt and answer no to the switch, with Chrome open and the extension
+   loaded: once the sign-in is done, claude.ai in Chrome should be on the active account again.
 
 ## Sources
 

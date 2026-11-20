@@ -597,18 +597,24 @@ try:
                                   cwd=P.home, input=token, capture_output=True, text=True, encoding="utf-8",
                                   timeout=180))
 
-    text = answered("a", "k", "console", "", token="K5-secret\n")
+    text = answered("a", "k", "console", "", "", token="K5-secret\n")
     kept = read(key("console"))["env"] if key("console").is_file() else {}
-    check("a, k and no URL: an Anthropic API key", "RUN key add console --api-key" in text
+    check("a, k and no URL: an Anthropic API key", "RUN key add console --api-key\n" in text
           and kept == {"ANTHROPIC_API_KEY": "K5-secret"})
     check("a, k and no URL: says how to switch to it", "Switch to it with: claude-switch console" in text)
     check("a, k and no URL: prints no token", no_secret(text))
-    text = answered("a", "K", "team", "https://gw5.example", token="T5-secret\n")
+    text = answered("a", "K", "team", "https://gw5.example", "n", token="T5-secret\n")
     kept = read(key("team"))["env"] if key("team").is_file() else {}
     check("a, k and a URL: a gateway key", kept == {"ANTHROPIC_BASE_URL": "https://gw5.example",
                                                     "ANTHROPIC_AUTH_TOKEN": "T5-secret"})
     check("a, k and a URL: the key is not switched to", env_of("ANTHROPIC_AUTH_TOKEN") == "G1-secret")
-    check("a and s: a sign-in, as a was", "RUN login" in answered("a", "s"))
+    text = answered("a", "k", "fast", "https://gw7.example", "y", token="F7-secret\n")
+    check("a, k and a switch: the key is added with --switch",
+          "RUN key add fast --base-url https://gw7.example --switch" in text)
+    check("a, k and a switch: the machine is on the new key", env_of("ANTHROPIC_AUTH_TOKEN") == "F7-secret"
+          and "Switched to fast, a gateway key" in text and marked("fast"))
+    check("a and s: a sign-in, as a was", "RUN login\n" in answered("a", "s", ""))
+    check("a, s and a switch: a sign-in that switches", "RUN login --switch\n" in answered("a", "s", "Y"))
     text = answered("a", "")
     check("a and Enter: back to the list, nothing run", "RUN" not in text and text.count("Claude Code accounts") == 2)
     text = answered("a", "x")
@@ -620,6 +626,9 @@ try:
     text = answered("a", "k", "bare", "gw6.example")
     check("a URL without https://: refused", "starts with https://" in text and "RUN" not in text
           and not key("bare").exists())
+    result = run("key", "import", "other", "--switch")
+    check("import --switch: refused, it's the key in use already", result.returncode != 0
+          and "Usage: claude-switch key import NAME" in out(result) and not key("other").exists())
 
     # What only Windows does to the keys, checked on Linux as well where it means the same.
     # Windows PowerShell can put a BOM before what it pipes into a program.
