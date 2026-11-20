@@ -130,7 +130,9 @@ Nothing more to do. When Claude Desktop is installed, it follows the switch.
 
    It opens the Claude sign-in page in your browser. Sign in with the other account, then give it a
    short name, or press Enter to keep its email as the name. When the browser offers an account that is
-   already saved, change accounts on that page or open the link in a private window.
+   already saved, change accounts on that page or open the link in a private window. In the prompt, `a`
+   asks for the kind of account first: `s` signs in a subscription, and `k` keeps an API key or a gateway
+   key. It asks for a name, the URL of the gateway (Enter for the Anthropic API) and then the key.
 
 3. Switch:
 
@@ -154,7 +156,7 @@ $ claude-switch list
 
 | Command | What it does |
 |---|---|
-| `claude-switch` | Opens a numbered list of the accounts: type a number to switch, `a` to add an account, `r` to rename one, `q` to quit. |
+| `claude-switch` | Opens a numbered list of the accounts: type a number to switch, `a` to add an account, a subscription or a key, `r` to rename one, `q` to quit. |
 | `claude-switch NAME` | Switches to the account `NAME`, a name or an email. |
 | `claude-switch list` | Prints the accounts. `*` marks the active one. |
 | `claude-switch login [ACCOUNT] [OPTIONS]` | Signs in an account and saves it, without switching. With `ACCOUNT`, renews the sign-in of that account. `OPTIONS` go to `claude auth login`. |

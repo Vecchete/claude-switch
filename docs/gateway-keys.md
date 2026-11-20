@@ -49,6 +49,22 @@ pass show llm/ci-gw | claude-switch key add ci-gw --like work-gw
 A gateway that takes its key in `ANTHROPIC_CUSTOM_HEADERS` is saved with `key import`, since `key add`
 asks for a token.
 
+The prompt saves a key too. `claude-switch`, then `a`, asks for the kind of account:
+
+```text
+   s) A subscription, signed in with the browser
+   k) An API key or a gateway key
+
+Which kind of account? k
+Name of the key: console
+Gateway URL (Enter for the Anthropic API):
+Gateway key for console:
+```
+
+An empty URL keeps an Anthropic API key, as `key add NAME --api-key` does, and a URL keeps a gateway key, as
+`key add NAME --base-url URL` does. The name is checked before the URL is asked, and a URL must start with
+`https://` or `http://`.
+
 `key renew NAME` gives a key a new token, asked the same way, in the variable its token was in. Its URL
 and model names stay. When the key is the active one, `settings.json` gets the new token too.
 

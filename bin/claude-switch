@@ -1165,6 +1165,38 @@ prompt_rename() {
     (lock_store && rename_account "${files[row - 1]}" "$new") || true
 }
 
+# Asks whether the new account is a subscription or a key, then signs it in or keeps the key. Each runs as a
+# claude-switch of its own, so a refusal ends that run and not the prompt.
+prompt_add() {
+    local kind name url problem
+    printf '\n   s) A subscription, signed in with the browser\n   k) An API key or a gateway key\n\n'
+    IFS= read -r -p 'Which kind of account? ' kind || return 0
+    case $kind in
+        s|S) bash "$0" login || true ;;
+        k|K)
+            read -r -p 'Name of the key: ' name || return 0
+            name=$(trim "$name")
+            [ -n "$name" ] || return 0
+            problem=$(name_problem "$name")
+            if [ -n "$problem" ]; then
+                printf '%s\n' "$problem"
+                return 0
+            fi
+            read -r -p 'Gateway URL (Enter for the Anthropic API): ' url || return 0
+            url=$(trim "$url")
+            if [ -z "$url" ]; then
+                bash "$0" key add "$name" --api-key || true
+            elif [[ ${url,,} == http://* || ${url,,} == https://* ]]; then
+                bash "$0" key add "$name" --base-url "$url" || true
+            else
+                printf 'A gateway URL starts with https:// or http://.\n'
+            fi
+            ;;
+        "") ;;
+        *) printf 'Type s or k.\n' ;;
+    esac
+}
+
 cmd_prompt() {
     local files file live shown here choice row when
     while :; do
@@ -1198,7 +1230,7 @@ cmd_prompt() {
         fi
         case $choice in
             q|Q) return 0 ;;
-            a|A) bash "$0" login || true ;;
+            a|A) prompt_add ;;
             r|R) prompt_rename ;;
             *)
                 if is_row "$choice" "${#files[@]}"; then

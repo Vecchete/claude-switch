@@ -407,5 +407,68 @@ printf 'q\n' | script -qfc "$SCRIPT" /dev/null > "$T/out" 2>&1
 check "the prompt reminds of an unkept key" 'grep -aq "no account keeps" "$T/out"'
 check "the prompt prints no token" no_secret
 
+# The prompt asks the kind of a new account: s signs a subscription in, k keeps a key. Each answer is typed once
+# its question shows, as a person would: a question that hides the key may throw away what was typed ahead, as
+# Python's getpass does. The terminal echoes the token typed here, so no_secret can't hold.
+fresh prompt-add
+ASK='Select an account to switch to: ' KIND='Which kind of account? ' NAME='Name of the key: '
+URL='Gateway URL (Enter for the Anthropic API): '
+# TEXT shows in the prompt's output past its first SEEN bytes, within 10 s. TEXT SEEN
+shows() {
+    local _
+    for _ in $(seq 100); do
+        tail -c +$(($2 + 1)) "$T/out" 2>/dev/null | grep -aqF -- "$1" && return 0
+        sleep 0.1
+    done
+    return 1
+}
+# Types each ANSWER once its TEXT shows after the answer before it. The input ends after the last answer, or at a
+# TEXT that doesn't show, and a prompt that still runs 10 s later is stopped. [TEXT ANSWER]...
+add_in_prompt() {
+    local seen=0 pid _
+    rm -f "$T/in" "$T/out"
+    mkfifo "$T/in"
+    script -qfc "$SCRIPT" /dev/null < "$T/in" > "$T/out" 2>&1 &
+    pid=$!
+    exec 7> "$T/in"
+    while [ $# -ge 2 ] && shows "$1" "$seen"; do
+        seen=$(stat -c %s "$T/out")
+        printf '%s\n' "$2" >&7
+        shift 2
+    done
+    exec 7>&-
+    for _ in $(seq 100); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+}
+add_in_prompt "$ASK" a "$KIND" k "$NAME" k9 "$URL" "" "Gateway key for k9: " K9-secret "$ASK" q
+check "prompt add: the question" 'grep -aq "Which kind of account? " "$T/out" \
+    && grep -aq "s) A subscription, signed in with the browser" "$T/out" && grep -aq "k) An API key or a gateway key" "$T/out"'
+check "prompt add, k without a URL: an Anthropic API key" \
+    '[ "$(jq -r .env.ANTHROPIC_API_KEY "$HOME/.claude-accounts/key_k9.json")" = K9-secret ] \
+    && [ "$(jq -r ".env.ANTHROPIC_BASE_URL // \"none\"" "$HOME/.claude-accounts/key_k9.json")" = none ]'
+check "prompt add, k: kept, and back to the list" 'grep -aq "Kept the gateway key k9" "$T/out" && [ "$(grep -ac "Claude Code accounts" "$T/out")" = 2 ]'
+add_in_prompt "$ASK" a "$KIND" K "$NAME" k10 "$URL" https://gw10.example "Gateway key for k10: " G10-secret "$ASK" q
+check "prompt add, k with a URL: a gateway key at that URL" \
+    '[ "$(jq -r .env.ANTHROPIC_AUTH_TOKEN "$HOME/.claude-accounts/key_k10.json")" = G10-secret ] \
+    && [ "$(jq -r .env.ANTHROPIC_BASE_URL "$HOME/.claude-accounts/key_k10.json")" = https://gw10.example ]'
+add_in_prompt "$ASK" a "$KIND" k "$NAME" gw1 "$ASK" q
+check "prompt add, a name already used: refused before the URL" \
+    'grep -aq "Another account is already called gw1" "$T/out" && ! grep -aq "Gateway URL" "$T/out"'
+add_in_prompt "$ASK" a "$KIND" k "$NAME" k11 "$URL" ftp://gw11.example "$ASK" q
+check "prompt add, a URL without http: refused" \
+    'grep -aq "A gateway URL starts with https:// or http://." "$T/out" && [ ! -e "$HOME/.claude-accounts/key_k11.json" ]'
+add_in_prompt "$ASK" a "$KIND" "" "$ASK" q
+check "prompt add, Enter: back to the list, nothing said" \
+    '! grep -aq "Type s or k" "$T/out" && [ "$(grep -ac "Claude Code accounts" "$T/out")" = 2 ]'
+add_in_prompt "$ASK" a "$KIND" x "$ASK" q
+check "prompt add, another answer: says what to type" 'grep -aq "Type s or k." "$T/out"'
+rm -f "$T/calls"
+add_in_prompt "$ASK" a "$KIND" s "$ASK" q
+check "prompt add, s: a sign-in" 'grep -q "^auth login" "$T/calls"'
+
 printf '%d passed, %d failed\n' "$passes" "$fails"
 [ "$fails" -eq 0 ]
