@@ -52,7 +52,10 @@ WATCH_TIMER=claude-switch-watch.timer
 # What Claude Code passes to the StopFailure hook of claude-switch. A budget comes back as unknown.
 HOOK_MATCHER="rate_limit|billing_error|authentication_failed|unknown"
 # A hook entry of claude-switch in settings.json, whatever path it was installed at.
-OWN_HOOK='any(.hooks[]?; .command | strings | (endswith(" hook") and contains("claude-switch")))'
+# A hook of claude-switch, here or installed elsewhere before: a command line that ends in " hook", or, as Windows
+# writes it, a program with arguments whose last one is hook.
+OWN_HOOK='any(.hooks[]?; (.command | strings | endswith(" hook") and contains("claude-switch"))
+    or ((.args | arrays | last == "hook") and any((.command, .args[]) | strings; contains("claude-switch"))))'
 
 # A login with a token in it. claude empties both tokens when the server refuses a refresh.
 SIGNED_IN='.claudeAiOauth.accessToken | type == "string" and length > 0'
@@ -102,6 +105,8 @@ STUB=""
 DEAD=0
 # Set while claude-switch switches on its own: Desktop restarts without a question.
 AUTO=""
+# Set when Claude Desktop stayed on its account because it runs this, one of its Code sessions for instance.
+DESKTOP_KEPT=""
 # The account the last route went to, and why, for the hook.
 ROUTED_TO=""
 ROUTED_WHY=""
@@ -779,6 +784,7 @@ desktop_switch() {
     account=$(jq -r '.oauthAccount.accountUuid // empty' "$1")
     [ -n "$account" ] || return 0
     "$DESKTOP_HELPER" switch "$account" 9>&- || status=$?
+    [ "$status" -ne 6 ] || DESKTOP_KEPT=yes
     [ "$status" -eq 3 ] || return 0
     if [ -n "$AUTO" ]; then
         answer=yes
@@ -1372,10 +1378,6 @@ nothing_left() {
 route() {
     local active best hold="" why
     ROUTED_TO="" ROUTED_WHY=""
-    # The log keeps its last lines.
-    if [ "$(stat -c %s "$AUTO_LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
-        tail -n 2000 "$AUTO_LOG" > "$AUTO_LOG.tmp" && mv "$AUTO_LOG.tmp" "$AUTO_LOG"
-    fi
     active=$(active_file || true)
     # Younger than the 5 minutes between two runs of the timer, so each run reads.
     "$USAGE_HELPER" read --max-age 240 --timeout 10 "$STORE"/*.json 2>/dev/null || true
@@ -1405,12 +1407,20 @@ route() {
     switch_to "$best" >> "$AUTO_LOG" 2>&1
     AUTO=""
     printf 'Switched to %s: %s.\n' "$ROUTED_TO" "$ROUTED_WHY"
-    notify "Switched to $ROUTED_TO" "$ROUTED_WHY."
+    notify "Switched to $ROUTED_TO" "$ROUTED_WHY.${DESKTOP_KEPT:+ Claude Desktop stays on its account: close it and run claude-switch $(printf '%q' "$ROUTED_TO") to bring it along.}"
+}
+
+# The log keeps its last lines once it passes 1 MB. Only before a run opens it: a run that writes to it would go
+# on writing to the file the trim replaces.
+trim_log() {
+    [ "$(stat -c %s "$AUTO_LOG" 2>/dev/null || echo 0)" -gt 1048576 ] || return 0
+    tail -n 2000 "$AUTO_LOG" > "$AUTO_LOG.$$" && mv "$AUTO_LOG.$$" "$AUTO_LOG"
 }
 
 # The timer runs this every 5 minutes. Without automatic switching or an open session it never gets here.
 cmd_watch() {
     [ $# -eq 0 ] || die "Usage: claude-switch watch"
+    trim_log
     route || true
 }
 
@@ -1476,6 +1486,12 @@ cmd_hook() {
         route || return 0
         [ -n "$ROUTED_TO" ] || return 0
         message="claude-switch moved this machine to $ROUTED_TO: $ROUTED_WHY."
+    fi
+    # A session of Claude Desktop goes on with the login of Desktop, which only a restart of Desktop changes, and that
+    # restart would end the session: woken, it would only meet the limit again.
+    if [ -x "$DESKTOP_HELPER" ] && "$DESKTOP_HELPER" inside 9>&- 2>/dev/null; then
+        printf 'The session runs in Claude Desktop, which keeps its account until it restarts: it is not woken.\n'
+        return 0
     fi
     note_wake "$session"
     printf '%s The request that failed can go out again now: carry on with the task where it stopped.\n' "$message" >&3
@@ -1634,6 +1650,7 @@ case ${1:-} in
         # Claude reads what the hook says: everything but its last sentence goes to the log.
         mkdir -p "$STORE"
         chmod 700 "$STORE"
+        trim_log
         exec 3>&2 >>"$AUTO_LOG" 2>&1
         ;;
 esac

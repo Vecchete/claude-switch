@@ -105,6 +105,12 @@ without asking when the switch goes from one claude.ai account to another. Its C
 it. A switch to or from a key leaves Desktop and Chrome alone. Every automatic switch shows a desktop
 notification, and Remote Control needs `/remote-control` again in a session after a claude.ai account changed.
 
+When the session that met the limit runs in Claude Desktop, in its Code tab, the hook runs inside Desktop, and
+closing Desktop would end the hook with the session. So the machine moves on, Desktop stays on its account, and
+the notification says so. That session isn't woken: it goes on with the login of Desktop, which only a restart
+of Desktop changes. Close Desktop and run `claude-switch NAME` with the account the machine moved to, and Desktop
+comes along.
+
 ## What it reads, and from where
 
 | Account | What it reads | From |
@@ -140,8 +146,9 @@ A time today shows as `17:20`, one this week as `Fri 22:00`, one later as `01/12
 `claude-switch auto on`:
 
 1. adds the hook to `~/.claude/settings.json`, beside your other hooks, once, and the rest of the file stays as
-   it is, with the same care as a [key switch](gateway-keys.md#how-settingsjson-is-written). The sessions
-   already open take it in too,
+   it is, with the same care as a [key switch](gateway-keys.md#how-settingsjson-is-written). A hook of
+   claude-switch installed elsewhere before, or written the way the Windows version writes it, gives way to it.
+   The sessions already open take it in too,
 2. starts the `claude-switch-watch` timer,
 3. moves the machine to the best account with room right away.
 
@@ -161,7 +168,7 @@ Beside the accounts, in `~/.claude-accounts`, mode 600 in a folder of mode 700:
 | `.usage/<account>.refused.json` | Until when the account waits after a session met its limit |
 | `.hold` | The account a switch you typed holds |
 | `.switched`, `.woken/` | When the last switch happened, and when each session was woken |
-| `.auto.log` | What the automatic switches did, its last lines |
+| `.auto.log` | What the automatic switches did, cut to its last 2000 lines once it passes 1 MB |
 
 ## Limits
 

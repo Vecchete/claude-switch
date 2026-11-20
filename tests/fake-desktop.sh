@@ -14,5 +14,7 @@ case $1 in
         ;;
     quit) exit "${FAKE_DESKTOP_QUIT:-0}" ;;
     start) exit 0 ;;
+    # FAKE_DESKTOP_INSIDE=0: Desktop runs the caller.
+    inside) exit "${FAKE_DESKTOP_INSIDE:-1}" ;;
 esac
 exit 2

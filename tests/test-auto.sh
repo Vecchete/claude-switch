@@ -96,10 +96,13 @@ jq -n --arg base "http://127.0.0.1:$PORT/gw" '{kind: "key", name: "gw", env: {AN
         ANTHROPIC_BASE_URL: $base}}' > "$STORE/key_gw.json"
 jq -n '{kind: "key", name: "api", env: {ANTHROPIC_API_KEY: "K-secret"}}' > "$STORE/key_api.json"
 chmod 600 "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$STORE"/*.json
-# Beside other hooks, the hook of a claude-switch installed elsewhere before.
+# Beside other hooks, the hook of a claude-switch installed elsewhere before, and the hook as Windows writes it.
+WINDOWS_HOOK='{matcher: "rate_limit", hooks: [{type: "command", command: "C:\\Python\\pyw.exe",
+    args: ["-3", "-I", "C:\\Users\\me\\.local\\share\\claude-switch\\claude-switch.py", "hook"]}]}'
 jq -n '{env: {ENABLE_TOOL_SEARCH: "true"}, hooks: {Stop: [{hooks: [{type: "command", command: "other-stop"}]}],
         StopFailure: [{matcher: "server_error", hooks: [{type: "command", command: "other-failure"}]},
-            {matcher: "rate_limit", hooks: [{type: "command", command: "/old/place/claude-switch hook"}]}]}}' > "$SETTINGS"
+            {matcher: "rate_limit", hooks: [{type: "command", command: "/old/place/claude-switch hook"}]},
+            '"$WINDOWS_HOOK"']}}' > "$SETTINGS"
 chmod 600 "$SETTINGS"
 A=a@example.com_org-a-00 U=u@example.com_org-u-00
 answer /api/oauth/usage A-token 200 "$(week 60 $(($(now) + 3 * DAY)) 10)"
@@ -130,6 +133,7 @@ FAKE_DESKTOP_SWITCH=3,0 "$SCRIPT" auto on > "$T/out" 2>&1; rc=$?
 check "auto on: exit 0" '[ "$rc" -eq 0 ]'
 check "auto on: the flag" '[ -f "$STORE/.auto" ]'
 check "auto on: one hook of claude-switch" '[ "$(jq "[.hooks.StopFailure[] | select(.hooks[0].command | endswith(\" hook\"))] | length" "$SETTINGS")" = 1 ]'
+check "auto on: the hook as Windows writes it is replaced too" '[ "$(jq "[.hooks.StopFailure[] | select(.hooks[0].args)] | length" "$SETTINGS")" = 0 ]'
 check "auto on: the hook runs this claude-switch" '[ "$(jq -r ".hooks.StopFailure[-1].hooks[0].command" "$SETTINGS")" = "$(printf %q "$SCRIPT") hook" ]'
 check "auto on: in the background, waking the session" '[ "$(jq -r ".hooks.StopFailure[-1].hooks[0].asyncRewake" "$SETTINGS")" = true ]'
 check "auto on: on the errors a switch can help" '[ "$(jq -r ".hooks.StopFailure[-1].matcher" "$SETTINGS")" = "rate_limit|billing_error|authentication_failed|unknown" ]'
@@ -160,8 +164,11 @@ check "watch: a full week goes to the next rank, a key" '[ "$rc" -eq 0 ] && [ "$
 check "watch: says why" 'grep -qE "^Switched to gw: ultra reached its weekly limit, until " "$T/out"'
 check "watch: a key leaves Desktop alone" '[ ! -s "$T/desktop.log" ]'
 before=$(requests)
+# The log past 1 MB keeps its last lines.
+yes "$(printf '%0600d' 0)" | head -n 2200 > "$STORE/.auto.log"
 "$SCRIPT" watch > "$T/out" 2>&1
 check "watch: on the best already, nothing to say" '[ ! -s "$T/out" ] && marked gw'
+check "watch: a log past 1 MB keeps its last lines" '[ "$(grep -c "^0" "$STORE/.auto.log")" = 2000 ]'
 check "watch: a full week isn't read again before it resets" '! tail -n +$((before + 1)) "$T/requests" | grep -q U-token'
 jq --argjson at $(($(now) - 250000)) '.at = $at' "$STORE/.usage/key_gw.json" > "$T/r" && mv "$T/r" "$STORE/.usage/key_gw.json"
 before=$(requests)
@@ -208,6 +215,8 @@ rm -rf "$STORE/.usage"
 "$SCRIPT" watch > /dev/null 2>&1
 check "hook setup: on Ultra" 'marked ultra'
 answer /api/oauth/usage U-token 200 "$(week 100 $(($(now) + 2 * DAY)))"
+# A log past 1 MB, cut before the hook writes to it.
+yes "$(printf '%0600d' 0)" | head -n 2200 > "$STORE/.auto.log"
 old_switch
 FAILED_AT=$(now)
 ANTHROPIC_AUTH_TOKEN=from-the-session CLAUDE_CODE_OAUTH_TOKEN=from-the-session \
@@ -218,6 +227,7 @@ check "hook: the next account is live" '[ "$(env_token)" = G-secret ]'
 check "hook: one sentence for Claude" '[ "$(grep -c . "$T/err")" = 1 ] && grep -qE "^claude-switch moved this machine to gw: ultra reached its weekly limit, until .*\. The request that failed can go out again now: carry on with the task where it stopped\.$" "$T/err"'
 check "hook: nothing on stdout" '[ ! -s "$T/out" ]'
 check "hook: claude-switch said the rest in its log" 'grep -q "Switched to gw, a gateway key" "$STORE/.auto.log"'
+check "hook: a log past 1 MB keeps its last lines" '[ "$(grep -c "^0" "$STORE/.auto.log")" = 2000 ]'
 check "hook: a wake counted" '[ "$(grep -c . "$STORE/.woken/s1")" = 1 ]'
 
 # A second session failed before that switch: it only has to send its request again.
@@ -251,7 +261,7 @@ old_switch
 FAKE_DESKTOP_SWITCH=3,0 hook '{"session_id": "s4", "error": "billing_error", "last_assistant_message": "Credit balance is too low"}'
 check "no credit: refused" '[ "$RC" -eq 2 ] && refused key_api && grep -q "api ran out of credit" "$T/err"'
 check "no credit: on to the plan with a window" '[ "$(live_access)" = A-token ] && [ -z "$(env_token)" ]'
-check "no credit: Desktop follows without a question" '[ "$(calls)" = "switch acct-a|quit|switch acct-a|start|" ]'
+check "no credit: Desktop follows without a question" '[ "$(calls)" = "switch acct-a|quit|switch acct-a|start|inside|" ]'
 cp "$STORE/.usage/key_api.refused.json" "$T/api.refused"
 printf 'K-secret\n' | "$SCRIPT" key renew api > "$T/out" 2>&1
 check "no credit: a new key ends the wait" '! refused key_api'
@@ -293,7 +303,22 @@ check "auto order: an unknown kind is refused" '[ "$rc" -ne 0 ] && grep -q "pro 
 check "auto order: a kind twice is refused" '[ "$rc" -ne 0 ] && grep -q "max is twice in the order." "$T/out"'
 "$SCRIPT" auto order ultra key max > /dev/null 2>&1
 
-# auto off: the hook and the timer go, the rest stays.
+# A session of Claude Desktop meets the limit: the machine moves on, Desktop keeps its account, and the session isn't
+# woken, since only a restart of Desktop, which would end it, gives it another login.
+"$SHARE/usage.py" refuse "$STORE/key_api.json" billing_error > /dev/null
+answer /api/oauth/usage U-token 200 "$(week 100 $(($(now) + 2 * DAY)))"
+old_switch
+rm -f "$T/desktop.log"
+: > "$T/notify"
+FAKE_DESKTOP_SWITCH=6 FAKE_DESKTOP_INSIDE=0 hook '{"session_id": "s8", "error": "rate_limit", "last_assistant_message": "x"}'
+check "a session of Desktop: the machine moves on" 'marked a@example.com'
+check "a session of Desktop: Desktop left alone" '[ "$(calls)" = "switch acct-a|inside|" ]'
+check "a session of Desktop: not woken" '[ "$RC" -eq 0 ] && [ ! -s "$T/err" ] && grep -q "it is not woken" "$STORE/.auto.log"'
+check "a session of Desktop: the notification says how to bring Desktop along" \
+    'grep -q "Claude Desktop stays on its account: close it and run claude-switch a@example.com to bring it along." "$T/notify"'
+
+# auto off: the hook and the timer go, the rest stays, with a hook as Windows writes it.
+jq ".hooks.StopFailure += [$WINDOWS_HOOK]" "$SETTINGS" > "$T/s" && cat "$T/s" > "$SETTINGS"
 "$SCRIPT" auto off > "$T/out" 2>&1
 check "auto off: the flag goes" '[ ! -e "$STORE/.auto" ]'
 check "auto off: only the hook of claude-switch goes" '[ "$(jq -c "[.hooks.StopFailure[].hooks[0].command]" "$SETTINGS")" = "[\"other-failure\"]" ] && [ "$(jq -r ".hooks.Stop[0].hooks[0].command" "$SETTINGS")" = other-stop ]'
@@ -301,8 +326,10 @@ check "auto off: the timer stops" 'grep -qx -- "--user disable --now claude-swit
 before=$(live_access)
 hook '{"session_id": "s7", "error": "rate_limit", "last_assistant_message": "x"}'
 check "auto off: the hook does nothing" '[ "$RC" -eq 0 ] && [ "$(live_access)" = "$before" ]'
-# Another account comes first now: a watch that ran would switch.
-printf 'max ultra key\n' > "$STORE/.auto-order"
+# The Ultra has room again: a watch that ran would switch to it.
+rm -f "$STORE/.usage/$U.refused.json"
+answer /api/oauth/usage U-token 200 "$(week 30 $(($(now) + 2 * DAY)))"
+stale "$U"
 "$SCRIPT" watch > "$T/out" 2>&1
 check "auto off: the watch does nothing" '[ ! -s "$T/out" ] && [ "$(live_access)" = "$before" ]'
 "$SCRIPT" auto off > "$T/out" 2>&1

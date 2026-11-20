@@ -80,6 +80,13 @@ rm -f "$T/desktop.log"
 "$SCRIPT" a@example.com > "$T/out" 2>&1
 rm -f "$T/desktop.log"
 
+# Desktop runs this switch: it stays open on its account, and nothing is asked.
+FAKE_DESKTOP_SWITCH=6 in_terminal y second
+check "run by Desktop: left alone, nothing asked" '[ "$(calls)" = "switch acct-b|" ] && ! grep -q "\[Y/n\]" "$T/out" && [ "$(live)" = b@example.com ]'
+rm -f "$T/desktop.log"
+"$SCRIPT" a@example.com > "$T/out" 2>&1
+rm -f "$T/desktop.log"
+
 FAKE_DESKTOP_SWITCH=3 FAKE_DESKTOP_QUIT=1 in_terminal y second
 check "Desktop that doesn't close: not started twice, said" '[ "$(calls)" = "switch acct-b|quit|" ] && grep -q "didn.t close" "$T/out"'
 rm -f "$T/desktop.log"

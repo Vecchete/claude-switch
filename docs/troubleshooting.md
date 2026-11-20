@@ -100,6 +100,12 @@ After that the registration moves with the account. See [chrome.md](chrome.md#re
 Desktop must be closed for a switch, and you answered no, or the switch came from a script without a
 terminal. Close Desktop, then run the same switch again to bring it along.
 
+### `This runs inside Claude Desktop, so Desktop stays on its account.`
+
+The switch ran inside Desktop: typed in its terminal, or the hook of one of its Code sessions that met a limit.
+Closing Desktop would have ended the switch with it. Close Desktop, then run the `claude-switch NAME` the
+message gives in another terminal, and Desktop comes along.
+
 ## Automatic switching
 
 ### `LEFT` shows `-`

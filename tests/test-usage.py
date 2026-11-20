@@ -12,6 +12,10 @@ import tempfile
 import threading
 import time
 
+# usage.py runs with TZ=UTC: the times this test expects are built in the same zone.
+os.environ["TZ"] = "UTC"
+time.tzset()
+
 HELPER = pathlib.Path(sys.argv[1]).resolve()
 DAY = 24 * 3600 * 1000
 HOUR = 3600 * 1000

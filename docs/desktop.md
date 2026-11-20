@@ -42,7 +42,9 @@ tokens, disconnects the connectors and resets the tool permissions.
    environment of the calling shell, and in a systemd scope of its own, so the timer that made the switch
    doesn't take it along when it ends. Code and Cowork tasks running in Desktop stop. No, or a switch
    from a script without a terminal, leaves Desktop on its account, and running `claude-switch NAME` again
-   once Desktop is closed brings it along.
+   once Desktop is closed brings it along. A switch that Desktop runs itself, from one of its Code sessions
+   or its terminal, never closes it, since that would end the switch with it: Desktop stays on its account
+   without a question.
 4. The open session is saved in `~/.claude-accounts/.desktop/<account>.json`, mode 600.
 5. The saved session of the target goes in, the cookies first and `config.json` after, with TERM, INT
    and HUP held between the two. When there is no saved session for that account yet, Desktop is left

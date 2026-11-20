@@ -21,8 +21,10 @@ file per account, and only you can read them.
     desktop.py quit [SECONDS]    close Desktop and wait until it is gone, 20 seconds at most
     desktop.py start             start Desktop, without the environment of the calling session, in a systemd
                                  scope of its own when the user's systemd runs
+    desktop.py inside            exit 0 when Desktop runs this, through one of its Code sessions for instance
 
-switch exits 3 when Desktop is open and on another account, 4 when its session has no name.
+switch exits 3 when Desktop is open and on another account, 4 when its session has no name, 6 when Desktop
+runs this, which closing it would end.
 """
 import base64
 import contextlib
@@ -30,6 +32,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -53,7 +56,7 @@ KEYS = ("sessionKey", "sessionKeyV3")
 TOKENS = ("oauth:tokenCacheV2", "oauth:tokenCache")
 ACCOUNT = "lastKnownAccountUuid"
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-RUNNING, UNNAMED, BROKEN = 3, 4, 5
+RUNNING, UNNAMED, BROKEN, INSIDE = 3, 4, 5, 6
 
 
 class Refused(Exception):
@@ -77,6 +80,26 @@ def running():
     except (OSError, ValueError):
         return None
     return int(pid) if os.path.basename(program) == b"claude-desktop" else None
+
+
+def inside_desktop():
+    """True when the Desktop that is open runs this, through one of its Code sessions or its terminal. Closing
+    Desktop would then end this run before the switch is done."""
+    desktop = running()
+    if desktop is None or desktop < 0:
+        return False
+    pid, seen = os.getpid(), set()
+    while pid > 1 and pid not in seen:
+        if pid == desktop:
+            return True
+        seen.add(pid)
+        try:
+            stat = pathlib.Path(f"/proc/{pid}/stat").read_text()
+        except OSError:
+            return False
+        # The name between parentheses can hold anything: the fields after the last ")" are the state and the parent.
+        pid = int(stat[stat.rindex(")") + 1:].split()[1])
+    return False
 
 
 def read_config():
@@ -221,6 +244,9 @@ def switch(account):
     if current == account:
         return f"Claude Desktop is already on {who}."
     if running():
+        if inside_desktop():
+            raise Refused(INSIDE, f"This runs inside Claude Desktop, so Desktop stays on its account. Close it and run "
+                                  f"claude-switch {shlex.quote(who)} in a terminal to bring it along.")
         raise Refused(RUNNING, "Claude Desktop is open.")
     # Desktop writes config.json through a journal and replays a leftover one at its next start.
     if CONFIG.with_name("config.json.journal").exists():
@@ -252,6 +278,9 @@ def quit_desktop(seconds):
         return 0
     if pid < 0:
         print("Claude Desktop is open on another computer.", file=sys.stderr)
+        return 1
+    if inside_desktop():
+        print("This runs inside Claude Desktop: close it by hand.", file=sys.stderr)
         return 1
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + seconds
@@ -293,6 +322,8 @@ def main(arguments):
             return quit_desktop(float(arguments[1]) if len(arguments) == 2 else 20)
         if command == "start" and len(arguments) == 1:
             return start()
+        if command == "inside" and len(arguments) == 1:
+            return 0 if inside_desktop() else 1
     except Refused as refusal:
         print(refusal, file=sys.stderr)
         return refusal.status

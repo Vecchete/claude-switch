@@ -137,6 +137,17 @@ class Machine:
         lock.symlink_to(f"{socket.gethostname()}-{process.pid}")
         return process
 
+    def inside_desktop(self, *args):
+        """Runs desktop.py ARGS under a process that looks like Claude Desktop and holds the lock, as Desktop runs the
+        hook of one of its Code sessions."""
+        script = 'ln -s "$2-$$" "$1"; "$3" -I "$4" "${@:5}"; status=$?; rm -f "$1"; exit "$status"'
+        result = subprocess.run(["bash", "-c", 'exec -a claude-desktop bash -c "$0" _ "$@"', script,
+                                 str(self.desktop / "SingletonLock"), socket.gethostname(), sys.executable, str(HELPER),
+                                 *args], capture_output=True, text=True, env=self.env(), timeout=60)
+        # A desktop.py that closed this Desktop left its lock.
+        (self.desktop / "SingletonLock").unlink(missing_ok=True)
+        return result
+
     def stop(self):
         for process in self.processes:
             process.kill()
@@ -206,7 +217,19 @@ with tempfile.TemporaryDirectory(prefix="claude-switch-desktop.") as folder:
     check("open Desktop already on B: fine", result.returncode == 0 and "already" in result.stdout)
     check("open Desktop already on B: nothing changed", m.snapshot() == before)
     check("status: open", json.loads(m.run("status").stdout)["running"])
+    check("open Desktop that doesn't run this: not inside", m.run("inside").returncode == 1)
     m.stop()
+    check("no Desktop: not inside", m.run("inside").returncode == 1)
+
+    # Desktop runs this, the hook of one of its Code sessions for instance: closing it would end the run.
+    result = m.inside_desktop("inside")
+    check("run by Desktop: inside", result.returncode == 0)
+    result = m.inside_desktop("switch", ACCOUNT_A)
+    check("run by Desktop: refused with 6, saying how to bring it along", result.returncode == 6
+          and "This runs inside Claude Desktop" in result.stderr and "claude-switch first in a terminal" in result.stderr)
+    check("run by Desktop: nothing changed", m.snapshot() == before)
+    result = m.inside_desktop("quit", "1")
+    check("run by Desktop: not closed from inside", result.returncode == 1 and "close it by hand" in result.stderr)
 
     # A lock left by a Desktop that is gone, or a process that only got its number.
     (m.desktop / "SingletonLock").symlink_to(f"{socket.gethostname()}-{os.getpid()}")
