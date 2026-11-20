@@ -570,6 +570,57 @@ try:
     check("the prompt reminds of an unkept key", "no account keeps" in text)
     check("the prompt prints no token", no_secret(text))
 
+    # a asks first whether the account is a subscription or a key. What the prompt runs for it is printed here, and a
+    # key is kept for real, by a claude-switch of its own that reads the token from the standard input.
+    fresh("prompt-add")
+    answering = root / "answering.py"
+    answering.write_text(
+        "import builtins, importlib.util, json, sys\n"
+        "spec = importlib.util.spec_from_file_location('claude_switch', sys.argv[1])\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(module)\n"
+        "answers = iter(json.loads(sys.argv[2]) + ['q'])\n"
+        "builtins.input = lambda question='': next(answers)\n"
+        "real = module.run\n"
+        "def run(command):\n"
+        "    print('RUN', *command[3:], flush=True)\n"
+        "    return real(command) if command[3] == 'key' else 0\n"
+        "module.run = run\n"
+        "try:\n"
+        "    module.cmd_prompt()\n"
+        "finally:\n"
+        "    module.cleanup()\n", encoding="utf-8")
+
+    def answered(*answers, token=""):
+        """The prompt with ANSWERS typed in, then q, and TOKEN on its standard input."""
+        return out(subprocess.run([sys.executable, "-I", str(answering), str(SCRIPT), json.dumps(answers)], env=P.env,
+                                  cwd=P.home, input=token, capture_output=True, text=True, encoding="utf-8",
+                                  timeout=180))
+
+    text = answered("a", "k", "console", "", token="K5-secret\n")
+    kept = read(key("console"))["env"] if key("console").is_file() else {}
+    check("a, k and no URL: an Anthropic API key", "RUN key add console --api-key" in text
+          and kept == {"ANTHROPIC_API_KEY": "K5-secret"})
+    check("a, k and no URL: says how to switch to it", "Switch to it with: claude-switch console" in text)
+    check("a, k and no URL: prints no token", no_secret(text))
+    text = answered("a", "K", "team", "https://gw5.example", token="T5-secret\n")
+    kept = read(key("team"))["env"] if key("team").is_file() else {}
+    check("a, k and a URL: a gateway key", kept == {"ANTHROPIC_BASE_URL": "https://gw5.example",
+                                                    "ANTHROPIC_AUTH_TOKEN": "T5-secret"})
+    check("a, k and a URL: the key is not switched to", env_of("ANTHROPIC_AUTH_TOKEN") == "G1-secret")
+    check("a and s: a sign-in, as a was", "RUN login" in answered("a", "s"))
+    text = answered("a", "")
+    check("a and Enter: back to the list, nothing run", "RUN" not in text and text.count("Claude Code accounts") == 2)
+    text = answered("a", "x")
+    check("a and neither: says what to type", "Type s or k." in text and "RUN" not in text)
+    check("a, k and Enter for the name: back to the list", "RUN" not in answered("a", "k", ""))
+    text = answered("a", "k", "gw1")
+    check("a name already used: refused before the URL is asked",
+          "Another account is already called gw1." in text and "RUN" not in text)
+    text = answered("a", "k", "bare", "gw6.example")
+    check("a URL without https://: refused", "starts with https://" in text and "RUN" not in text
+          and not key("bare").exists())
+
     # What only Windows does to the keys, checked on Linux as well where it means the same.
     # Windows PowerShell can put a BOM before what it pipes into a program.
     fresh("bom-token")

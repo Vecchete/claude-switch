@@ -52,7 +52,9 @@ settings Claude Desktop keeps per account, which go over to the next account.
 
 3. Run `claude-switch login` once for each account, then `claude-switch NAME`. A gateway key is kept with
    `claude-switch key import NAME` or `claude-switch key add NAME`, see
-   [Gateway keys](../docs/gateway-keys.md). `claude-switch help` has the rest.
+   [Gateway keys](../docs/gateway-keys.md). In the prompt, `a` asks for the kind of account first: `s` signs
+   in a subscription, and `k` keeps an API key or a gateway key. It asks for a name, the URL of the gateway
+   (Enter for the Anthropic API) and then the key. `claude-switch help` has the rest.
 
 ## Where things are
 

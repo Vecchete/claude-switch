@@ -1557,6 +1557,36 @@ def prompt_rename(files):
         unlock_store()
 
 
+def prompt_add():
+    """Asks whether the new account is a subscription or a key, then signs it in or keeps the key. Each runs as a
+    claude-switch of its own, so a refusal ends that run and not the prompt."""
+    print("\n   s) A subscription, signed in with the browser\n   k) An API key or a gateway key\n")
+    try:
+        kind = input("Which kind of account? ")
+        if kind in ("s", "S"):
+            command = ["login"]
+        elif kind in ("k", "K"):
+            name = input("Name of the key: ").strip()
+            if not name:
+                return
+            problem = name_problem(name)
+            if problem is not None:
+                print(problem)
+                return
+            url = input("Gateway URL (Enter for the Anthropic API): ").strip()
+            if url and not re.match(r"https?://", url, re.IGNORECASE):
+                print("A gateway URL starts with https:// or http://.")
+                return
+            command = ["key", "add", name] + (["--base-url", url] if url else ["--api-key"])
+        else:
+            if kind:
+                print("Type s or k.")
+            return
+    except EOFError:
+        return
+    run([sys.executable, "-I", str(pathlib.Path(__file__).resolve()), *command])
+
+
 def cmd_prompt():
     while True:
         lock_store()
@@ -1587,7 +1617,7 @@ def cmd_prompt():
         if choice in ("q", "Q"):
             return
         if choice in ("a", "A"):
-            run([sys.executable, "-I", str(pathlib.Path(__file__).resolve()), "login"])
+            prompt_add()
         elif choice in ("r", "R"):
             prompt_rename(files)
         elif is_row(choice, len(files)):
