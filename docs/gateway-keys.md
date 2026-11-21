@@ -29,8 +29,9 @@ them alone. Each key is one file, `~/.claude-accounts/key_<name>.json`, mode 600
 claude-switch key import work-gw
 ```
 
-`key add` saves another one. It asks for the token without echo, or reads it from the standard input. It
-never takes it from the command line, where the shell history and the process list would keep it:
+`key add` saves another one. It asks for the token on the terminal, where it shows as you type or paste it,
+or reads it from the standard input. It never takes it from the command line, where the shell history and
+the process list would keep it:
 
 ```bash
 claude-switch key add team-gw --like work-gw

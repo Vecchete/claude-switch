@@ -183,6 +183,9 @@ MUTANTS = [
      "            elif [[ ${url,,} == http://* || ${url,,} == https://* ]]; then\n", "            elif true; then\n"),
     ("key-prompt-add-bearer-for-anthropic", "switch", "keys",
      '                command=(key add "$name" --api-key)\n', '                command=(key add "$name")\n'),
+    # A key shows as it's typed or pasted.
+    ("key-pasted-unseen", "switch", "keys", '        read -r -p "Gateway key for $1: " TOKEN || true\n',
+     '        read -rs -p "Gateway key for $1: " TOKEN || true\n'),
     # What a in the prompt asks last, and what an add does with the answer.
     ("prompt-add-switch-not-asked", "switch", "keys",
      "    read -r -p \"Switch to it once it's added? [y/N] \" answer || return 0\n    case $(trim \"$answer\") in\n"

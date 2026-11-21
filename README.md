@@ -169,7 +169,7 @@ the week resets, or of the budget of a gateway key. See [docs/auto.md](docs/auto
 | `claude-switch login [ACCOUNT] [--switch] [OPTIONS]` | Signs in an account and saves it, without switching unless with `--switch`. With `ACCOUNT`, renews the sign-in of that account. `OPTIONS` go to `claude auth login`. |
 | `claude-switch rename NAME NEW_NAME` | Renames an account. |
 | `claude-switch key import NAME` | Saves the gateway key in `~/.claude/settings.json` as the account `NAME`. |
-| `claude-switch key add NAME [--switch] [OPTIONS]` | Saves another gateway key, and switches to it with `--switch`. Its token is asked without echo, or read from the standard input. |
+| `claude-switch key add NAME [--switch] [OPTIONS]` | Saves another gateway key, and switches to it with `--switch`. Its token is asked on the terminal, where it shows as you type or paste it, or read from the standard input. |
 | `claude-switch key renew NAME` | Gives a gateway key a new token. |
 | `claude-switch key remove NAME` | Forgets a gateway key. |
 | `claude-switch refresh [--force]` | Refreshes the logins of the accounts that are not active. The timer runs it for you. |

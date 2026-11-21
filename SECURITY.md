@@ -27,8 +27,8 @@ Only the latest commit of `main` gets fixes. There are no releases yet.
 - Every login it saves is in `~/.claude-accounts`, a folder of mode 700 with files of mode 600. The
   Claude Code files it writes keep their own modes.
 - It never prints a token, and never puts one on a command line, where the shell history and the process
-  list would keep it. A gateway token is asked without echo or read from the standard input, and tokens
-  are compared inside jq.
+  list would keep it. A gateway token is asked on the terminal, where it shows as you type or paste it, or
+  read from the standard input, and tokens are compared inside jq.
 - `claude` signs in and refreshes the logins. claude-switch itself asks for what an account has left
   only: the access token of a claude.ai account goes to `https://api.anthropic.com/api/oauth/usage`, never
   to `ANTHROPIC_BASE_URL`, and a gateway key to the `/key/info` of its own gateway. The Chrome host sends

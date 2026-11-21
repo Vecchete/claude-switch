@@ -409,7 +409,7 @@ check "the prompt prints no token" no_secret
 
 # The prompt asks the kind of a new account: s signs a subscription in, k keeps a key. Each answer is typed once
 # its question shows, as a person would: a question that hides the key may throw away what was typed ahead, as
-# Python's getpass does. The terminal echoes the token typed here, so no_secret can't hold.
+# Python's getpass does. The key shows as it's typed or pasted, so no_secret can't hold.
 fresh prompt-add
 ASK='Select an account to switch to: ' KIND='Which kind of account? ' NAME='Name of the key: '
 URL='Gateway URL (Enter for the Anthropic API): ' SWITCH="Switch to it once it's added? [y/N] "
@@ -451,6 +451,7 @@ check "prompt add, k without a URL: an Anthropic API key" \
     '[ "$(jq -r .env.ANTHROPIC_API_KEY "$HOME/.claude-accounts/key_k9.json")" = K9-secret ] \
     && [ "$(jq -r ".env.ANTHROPIC_BASE_URL // \"none\"" "$HOME/.claude-accounts/key_k9.json")" = none ]'
 check "prompt add, k: kept, and back to the list" 'grep -aq "Kept the gateway key k9" "$T/out" && [ "$(grep -ac "Claude Code accounts" "$T/out")" = 2 ]'
+check "prompt add, k: the key shows as it is pasted" 'grep -a "Gateway key for k9: " "$T/out" | grep -aq "K9-secret"'
 check "prompt add, k and Enter: says how to switch to it" 'grep -aq "Switch to it with: claude-switch k9" "$T/out" && marked gw1'
 add_in_prompt "$ASK" a "$KIND" K "$NAME" k10 "$URL" https://gw10.example "$SWITCH" n "Gateway key for k10: " G10-secret "$ASK" q
 check "prompt add, k with a URL: a gateway key at that URL" \
