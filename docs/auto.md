@@ -46,8 +46,8 @@ An account has room while:
 - it's still signed in, and its sign-in hasn't ended,
 - no session met one of its limits since that limit last reset, see below.
 
-An Anthropic API key has nothing to read, so it counts as having room until a request answers that its credit
-is too low.
+No API gives out the credit an Anthropic API key has left, so such a key counts as having room until a request
+answers that its credit is too low.
 
 ### A switch you make yourself
 
@@ -147,7 +147,10 @@ background refresh. A reading that fails keeps what was known.
 | `no limit` | The gateway key has no budget |
 | `refused until 17:20` | A session met a limit of this account, which waits until then |
 | `signed out` | It needs a new sign-in, see [refresh.md](refresh.md) |
-| `-` | Nothing to read: an Anthropic API key, or no answer |
+| `not readable` | An Anthropic API key: no API gives out the credit it has left, the Billing page of the Claude Console shows it |
+| `-` | Nothing to read: a key in headers only, or no answer |
+
+When an Anthropic API key is among the accounts, a line under the table says so once.
 
 A time today shows as `17:20`, one this week as `Fri 22:00`, one later as `01/12`.
 

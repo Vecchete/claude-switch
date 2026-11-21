@@ -110,10 +110,16 @@ message gives in another terminal, and Desktop comes along.
 
 ### `LEFT` shows `-`
 
-Nothing could be read for that account: an Anthropic API key, which has nothing to read, a gateway that
-doesn't answer `/key/info`, an access token that ran out and waits for the background refresh, or no
-answer from the usage endpoint. Each reading says why in `~/.claude-accounts/.usage/<account>.json`, in
-`error`. A reading is tried again 5 minutes later.
+Nothing could be read for that account: a gateway that doesn't answer `/key/info`, a key in headers only,
+an access token that ran out and waits for the background refresh, or no answer from the usage endpoint.
+Each reading says why in `~/.claude-accounts/.usage/<account>.json`, in `error`. A reading is tried again
+5 minutes later.
+
+### `LEFT` shows `not readable`
+
+The account is an Anthropic API key. No API gives out the credit such a key has left: the Billing page of
+the Claude Console shows it. Automatic switching counts the key as having room until a request answers
+that its credit is too low, and then waits a day, or until `claude-switch key renew`.
 
 ### The machine didn't move when an account ran out
 

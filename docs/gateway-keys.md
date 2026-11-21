@@ -175,7 +175,8 @@ claude-switch: ANTHROPIC_AUTH_TOKEN is set in this shell, a claude started from 
 
 `list` and the prompt show what a gateway key has left of its budget, read from the `/key/info` of its
 gateway with the key itself, LiteLLM's: what it spent, its budget and when the budget resets. Another
-gateway may not answer it, and an Anthropic API key has nothing to read, so `LEFT` shows `-` for them.
+gateway may not answer it, so `LEFT` shows `-` for its keys. No API gives out the credit an Anthropic API
+key has left, so `LEFT` shows `not readable` for one: the Billing page of the Claude Console shows it.
 [Automatic switching](auto.md) counts a key as having room while it's under its budget, and an Anthropic
 API key until a request says its credit is too low.
 

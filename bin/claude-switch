@@ -187,6 +187,9 @@ Adding an account doesn't switch to it, unless with --switch. With automatic swi
 account ranks with the others: added without --switch, the machine goes to it at once when it comes
 first, and added with --switch, the next check moves the machine on when another account comes first.
 
+The credit an Anthropic API key has left is not readable: no API gives it out, and the Billing page of
+the Claude Console shows it.
+
 Don't use /logout on an account you want to keep: it revokes the login saved here too.
 To forget an account, remove its file in ~/.claude-accounts, or a gateway key with claude-switch key
 remove NAME.
@@ -1575,6 +1578,17 @@ cmd_hook() {
     exit 2
 }
 
+# Once after the table, when an Anthropic API key is among the accounts.
+note_unreadable() {
+    local text
+    for text in ${LEFT_OF[@]+"${LEFT_OF[@]}"}; do
+        if [ "$text" = "not readable" ]; then
+            printf 'The credit an Anthropic API key has left is not readable: the Billing page of the Claude Console shows it.\n'
+            return 0
+        fi
+    done
+}
+
 # Brings the readings up to date and fills LEFT_OF with what each account has left.
 read_left() {
     local file text
@@ -1597,6 +1611,7 @@ cmd_list() {
         [ "$file" != "$live" ] || marker="*"
         printf '%s %-28s %-36s %-6s %-11s %s\n' "$marker" "$LABEL" "$EMAIL" "$PLAN" "$ENDS" "${LEFT_OF[$file]:--}"
     done
+    note_unreadable
     remind_unkept_key
     [ -z "$live" ] || remind_overrides "$live"
     remind_signins
@@ -1689,6 +1704,7 @@ cmd_prompt() {
             [ "$file" != "$live" ] || here="active"
             printf '  %2d) %-56s %-6s %-17s %-22s %s\n' "$row" "$shown" "$PLAN" "$when" "${LEFT_OF[$file]:--}" "$here"
         done
+        note_unreadable
         remind_unkept_key
         [ -z "$live" ] || remind_overrides "$live"
         remind_signins

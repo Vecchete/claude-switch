@@ -4,8 +4,9 @@
 A claude.ai account is read from the endpoint Claude Code's /usage reads, with the account's own access token.
 Claude Code keeps its last reading of the account it is on in ~/.claude.json, which goes first while it is the
 newer one. A gateway key is read from the /key/info of its gateway, LiteLLM's, with the key itself. An Anthropic
-API key has nothing to read: Anthropic gives out no remaining credit, so it counts as available until a request
-says otherwise. Nothing here sends a login anywhere but to the one that issued it.
+API key has nothing to read: Anthropic gives out no remaining credit, so left says it's not readable, and it
+counts as available until a request says otherwise. Nothing here sends a login anywhere but to the one that
+issued it.
 
 The readings are kept in ~/.claude-accounts/.usage, one file per account, and a refusal a session met beside it.
 Only you can read them.
@@ -129,12 +130,20 @@ def gateway_of(account):
     """The URL of the gateway a key goes to, None for an Anthropic API key or a key in headers only."""
     env = key_env(account)
     base = env.get("ANTHROPIC_BASE_URL")
-    if not base or not (env.get("ANTHROPIC_AUTH_TOKEN") or env.get("ANTHROPIC_API_KEY")):
-        return None
-    host = urllib.parse.urlsplit(base).hostname or ""
-    if host == "api.anthropic.com" or host.endswith(".anthropic.com"):
+    if not base or not (env.get("ANTHROPIC_AUTH_TOKEN") or env.get("ANTHROPIC_API_KEY")) or anthropic_url(base):
         return None
     return base.rstrip("/")
+
+
+def anthropic_url(base):
+    host = urllib.parse.urlsplit(base).hostname or ""
+    return host == "api.anthropic.com" or host.endswith(".anthropic.com")
+
+
+def anthropic_api_key(account):
+    """True for a key that goes to the Anthropic API itself, whose credit no API gives out."""
+    base = key_env(account).get("ANTHROPIC_BASE_URL")
+    return is_key(account) and (not base or anthropic_url(base))
 
 
 def label(account):
@@ -423,7 +432,7 @@ def left_text(file, account, now):
     if is_key(account):
         budget = reading.get("budget")
         if not budget:
-            return "-"
+            return "not readable" if anthropic_api_key(account) else "-"
         if budget.get("max") is None:
             return "no limit"
         remaining = budget["max"] - budget["spend"]

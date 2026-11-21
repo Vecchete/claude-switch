@@ -237,7 +237,12 @@ def main():
         when = datetime.datetime.fromtimestamp(week_ends / 1000).strftime("%a %H:%M")
         check("left: the week of a subscription", left.get(ultra) == f"70% until {when}")
         check("left: a gateway budget", left.get(gw, "").startswith("$21.80 until "))
-        check("left: nothing to read for an API key", left.get(api) == "-")
+        check("left: an Anthropic API key is not readable", left.get(api) == "not readable")
+        check("left: a gateway key in headers only, nothing read", left.get(headers_only) == "-")
+        direct = m.key("direct", {"ANTHROPIC_API_KEY": "D-token", "ANTHROPIC_BASE_URL": "https://api.anthropic.com"})
+        rc, out, _ = m.run("left", direct)
+        check("left: a key whose URL is the Anthropic API is not readable", out.strip().endswith("\tnot readable"))
+        os.remove(direct)
         check("left: one line per account", len(left) == len(everyone))
 
         # The best account with room: Ultra, then a key, then a plan with a 5-hour window.

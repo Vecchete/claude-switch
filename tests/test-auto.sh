@@ -118,7 +118,9 @@ check "list: the LEFT column" 'head -1 "$T/out" | grep -qE "UNTIL +LEFT$"'
 check "list: the week of the active account" 'grep -E "^\* a@example.com " "$T/out" | grep -qE " 40% until [A-Z][a-z]{2} [0-9]{2}:[0-9]{2}$"'
 check "list: the week of another account" 'grep -E "^  ultra " "$T/out" | grep -qE " 70% until "'
 check "list: a gateway budget" 'grep -E "^  gw " "$T/out" | grep -q "\$21.80 until "'
-check "list: nothing to read for an API key" 'grep -E "^  api " "$T/out" | grep -qE " -$"'
+check "list: an Anthropic API key is not readable" 'grep -E "^  api " "$T/out" | grep -qE " not readable$"'
+check "list: says once why it is not readable" \
+    '[ "$(grep -c "^The credit an Anthropic API key has left is not readable: the Billing page of the Claude Console shows it.$" "$T/out")" = 1 ]'
 check "list prints no token" '! grep -qE "secret|-token" "$T/out"'
 check "list: the readings are private" '[ "$(stat -c %a "$STORE/.usage")" = 700 ] && [ "$(stat -c %a "$STORE/.usage/$U.json")" = 600 ]'
 rm -rf "$STORE/.usage"
@@ -127,6 +129,7 @@ check "list offline: still a list" '[ "$rc" -eq 0 ] && grep -E "^  ultra " "$T/o
 rm -rf "$STORE/.usage"
 printf 'q\n' | script -qfc "$SCRIPT" /dev/null > "$T/out" 2>&1
 check "the prompt: what each account has left" 'grep -a "ultra" "$T/out" | grep -q "70% until "'
+check "the prompt: says why an API key is not readable" 'grep -aq "The credit an Anthropic API key has left is not readable" "$T/out"'
 
 # auto on: the flag, the hook, the timer, and the best account at once.
 "$SCRIPT" auto > "$T/out" 2>&1
@@ -265,6 +268,9 @@ FAKE_DESKTOP_SWITCH=3,0 hook '{"session_id": "s4", "error": "billing_error", "la
 check "no credit: refused" '[ "$RC" -eq 2 ] && refused key_api && grep -q "api ran out of credit" "$T/err"'
 check "no credit: on to the plan with a window" '[ "$(live_access)" = A-token ] && [ -z "$(env_token)" ]'
 check "no credit: Desktop follows without a question" '[ "$(calls)" = "switch acct-a|quit|switch acct-a|start|inside|" ]'
+"$SCRIPT" list > "$T/out" 2>&1
+check "list: a refused API key says until when, and no note" \
+    'grep -E "^  api " "$T/out" | grep -q " refused until " && ! grep -q "not readable" "$T/out"'
 cp "$STORE/.usage/key_api.refused.json" "$T/api.refused"
 printf 'K-secret\n' | "$SCRIPT" key renew api > "$T/out" 2>&1
 check "no credit: a new key ends the wait" '! refused key_api'

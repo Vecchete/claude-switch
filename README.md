@@ -54,7 +54,7 @@ sign-in, and everything else stays shared.
   background, and claude-switch reminds you a week before a sign-in ends.
 - Keys of LLM gateways such as LiteLLM, and Anthropic API keys, are accounts too.
 - `list` and the prompt show what each account has left: of its week for a subscription, of its budget for a
-  gateway key.
+  gateway key. The credit of an Anthropic API key is not readable, and they say so.
 - Automatic switching, once you turn it on: the machine stays on the best account with room, and a session
   that meets a limit moves to the next account and carries on by itself.
 - An interactive prompt, `list`, `rename`, and Tab completion in bash.
