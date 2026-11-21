@@ -46,6 +46,8 @@ tokens, disconnects the connectors and resets the tool permissions.
    or its terminal, never closes it, since that would end the switch with it: Desktop stays on its account
    without a question.
 4. The open session is saved in `~/.claude-accounts/.desktop/<account>.json`, mode 600.
+   `claude-switch delete` takes the session of the account it deletes, unless another account kept here
+   is the same login.
 5. The saved session of the target goes in, the cookies first and `config.json` after, with TERM, INT
    and HUP held between the two. When there is no saved session for that account yet, Desktop is left
    signed out, already expecting that account. Sign in to it once, and the switch keeps it from then on.

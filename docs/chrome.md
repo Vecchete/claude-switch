@@ -26,7 +26,8 @@ manifest can name it. To see which account Chrome is on and which sessions are s
   `alarms` and `declarativeNetRequest`, and for claude.ai only.
 - The native host, `share/chrome-host.py`. Chrome starts it for the extension, and claude-switch reaches
   it through the socket `~/.claude-accounts/.chrome.sock`.
-- The saved sessions, `~/.claude-accounts/.web/<account>.json`, mode 600.
+- The saved sessions, `~/.claude-accounts/.web/<account>.json`, mode 600. `claude-switch delete` takes the
+  session of the account it deletes, unless another account kept here is the same login.
 
 ## A swap
 

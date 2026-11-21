@@ -70,12 +70,13 @@ _claude_switch() {
         case ${#WORDS[@]}:${WORDS[1]-} in
             2:-*) printf '%s\n' -h --help ;;
             2:*)
-                printf '%s\n' list login key rename refresh auto help
+                printf '%s\n' list login key rename delete refresh auto help
                 _claude_switch_accounts
                 ;;
             3:auto) printf '%s\n' on off order ;;
             3:login) _claude_switch_accounts logins ;;
             3:rename) _claude_switch_accounts ;;
+            3:delete) _claude_switch_accounts ;;
             3:key) printf '%s\n' import add renew remove ;;
             3:refresh) printf '%s\n' --force ;;
             # No case in this case: bash 5.1 breaks the whole function on one inside a process substitution.

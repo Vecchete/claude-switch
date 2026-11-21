@@ -278,5 +278,93 @@ TZ=JST-9 "$SCRIPT" list > "$T/out" 2>&1
 check "reminder: local dates, calendar days" \
     'grep -q "The sign-in of second ends on $(TZ=JST-9 date -d "2 days" +%d/%m/%Y), in 2 days" "$T/out"'
 
+# delete: a claude.ai account goes with its login kept here, its readings, a hold on it, and its saved sessions
+# of Chrome and Desktop, unless another account kept here is the same login. Never the login in ~/.claude.
+STORE=$HOME/.claude-accounts
+mkdir -p "$STORE/.usage" "$STORE/.web" "$STORE/.desktop"
+# Keeps a signed-in account. EMAIL ORGANIZATION UUID [NAME]
+kept() {
+    jq -n --arg email "$1" --arg org "$2" --arg uuid "$3" --arg name "${4:-}" '{name: $name, login: {claudeAiOauth: {
+        accessToken: ($email + "-access"), refreshToken: ($email + "-refresh"), expiresAt: 4102444800000,
+        refreshTokenExpiresAt: 4102444800000, scopes: ["user:inference", "user:profile"], subscriptionType: "pro"}},
+        oauthAccount: {emailAddress: $email, accountUuid: $uuid, organizationUuid: $org}}' > "$STORE/$1_${2:0:8}.json"
+    chmod 600 "$STORE/$1_${2:0:8}.json"
+}
+U1=11111111-2222-3333-4444-555555555555 U2=66666666-7777-8888-9999-000000000000
+kept d1@example.com org-of-d-0000 "$U1"
+kept twin@example.com org-of-1-0000 "$U2" twin1
+kept twin@example.com org-of-2-0000 "$U2" twin2
+for stem in d1@example.com_org-of-d twin@example.com_org-of-1; do
+    printf '{}\n' > "$STORE/.usage/$stem.json"
+    printf '{}\n' > "$STORE/.usage/$stem.refused.json"
+done
+for saved in "$STORE/.web/$U1.json" "$STORE/.desktop/$U1.json" "$STORE/.web/$U2.json" "$STORE/.desktop/$U2.json"; do
+    printf '{}\n' > "$saved"
+done
+printf 'd1@example.com_org-of-d.json\n' > "$STORE/.hold"
+"$SCRIPT" delete d1@example.com > "$T/out" 2>&1
+check "delete: the account is gone" 'grep -qx "Deleted d1@example.com." "$T/out" && [ ! -e "$STORE/d1@example.com_org-of-d.json" ]'
+check "delete: its readings and the hold on it go too" \
+    '[ ! -e "$STORE/.usage/d1@example.com_org-of-d.json" ] && [ ! -e "$STORE/.usage/d1@example.com_org-of-d.refused.json" ] \
+    && [ ! -e "$STORE/.hold" ]'
+check "delete: its saved sessions of Chrome and Desktop go too" '[ ! -e "$STORE/.web/$U1.json" ] && [ ! -e "$STORE/.desktop/$U1.json" ]'
+"$SCRIPT" rename twin2 delete > "$T/out" 2>&1; rc=$?
+check "delete is no name" '[ "$rc" -ne 0 ] && grep -q "delete is a command of this script, choose another name." "$T/out"'
+printf 'twin@example.com_org-of-2.json\n' > "$STORE/.hold"
+"$SCRIPT" delete twin1 > "$T/out" 2>&1
+check "delete one of a login kept twice: gone, with its readings" \
+    'grep -qx "Deleted twin1." "$T/out" && [ ! -e "$STORE/twin@example.com_org-of-1.json" ] \
+    && [ ! -e "$STORE/.usage/twin@example.com_org-of-1.json" ]'
+check "delete one of a login kept twice: the saved sessions stay for the other" \
+    '[ -e "$STORE/.web/$U2.json" ] && [ -e "$STORE/.desktop/$U2.json" ]'
+check "delete: a hold on another account stays" '[ "$(cat "$STORE/.hold")" = twin@example.com_org-of-2.json ]'
+printf '{"oauthAccount": \n' > "$STORE/broken.json"
+"$SCRIPT" delete twin2 > "$T/out" 2>&1
+check "delete beside a file that isn't an account: the saved sessions stay, it may be the same login" \
+    'grep -qx "Deleted twin2." "$T/out" && [ -e "$STORE/.web/$U2.json" ] && [ -e "$STORE/.desktop/$U2.json" ]'
+rm "$STORE/broken.json"
+kept twin@example.com org-of-3-0000 "$U2" twin3
+"$SCRIPT" delete twin3 > "$T/out" 2>&1
+check "delete the last of them: the saved sessions go" \
+    'grep -qx "Deleted twin3." "$T/out" && [ ! -e "$STORE/.web/$U2.json" ] && [ ! -e "$STORE/.desktop/$U2.json" ]'
+kept bad@example.com org-of-b-0000 ../../escape
+printf '{}\n' > "$HOME/escape.json"
+"$SCRIPT" delete bad@example.com > "$T/out" 2>&1
+check "delete: a uuid that isn't one names no file" 'grep -qx "Deleted bad@example.com." "$T/out" && [ -e "$HOME/escape.json" ]'
+"$SCRIPT" delete c@example.com > "$T/out" 2>&1; rc=$?
+check "delete the account Claude Code is on: refused" \
+    '[ "$rc" -ne 0 ] && [ -e "$C_FILE" ] \
+    && grep -qx "claude-switch: c@example.com is the account Claude Code is on: switch to another one before you delete it." "$T/out"'
+
+# d in the prompt asks which account and whether to delete it, no by default. A refusal ends the deletion, not
+# the prompt.
+kept p1@example.com org-of-p-0000 22222222-3333-4444-5555-666666666666
+# The number the prompt gives FILE.
+row_of() {
+    local row=0 file
+    for file in "$STORE"/*.json; do
+        row=$((row + 1))
+        [ "$file" != "$1" ] || break
+    done
+    printf '%s\n' "$row"
+}
+P_FILE=$STORE/p1@example.com_org-of-p.json
+printf 'd\n%s\n\nq\n' "$(row_of "$P_FILE")" | script -qfc "$SCRIPT" /dev/null > "$T/out" 2>&1
+check "prompt delete: d is offered" 'grep -aq "   d) Delete an account" "$T/out"'
+check "prompt delete, Enter: kept" \
+    'grep -aq "Delete which one (number)? " "$T/out" && grep -aqF "Delete p1@example.com? [y/N] " "$T/out" && [ -e "$P_FILE" ]'
+printf 'd\n%s\ny\nq\n' "$(row_of "$P_FILE")" | script -qfc "$SCRIPT" /dev/null > "$T/out" 2>&1
+check "prompt delete, y: deleted, and back to the list" \
+    'grep -aq "Deleted p1@example.com." "$T/out" && [ ! -e "$P_FILE" ] && [ "$(grep -ac "Claude Code accounts" "$T/out")" = 2 ]'
+printf 'd\n99\nq\n' | script -qfc "$SCRIPT" /dev/null > "$T/out" 2>&1
+check "prompt delete: a number not in the list" 'grep -aq "There is no account 99." "$T/out"'
+printf 'd\n%s\ny\nq\n' "$(row_of "$C_FILE")" | script -qfc "$SCRIPT" /dev/null > "$T/out" 2>&1
+check "prompt delete of the account Claude Code is on: refused, the prompt goes on" \
+    'grep -aq "c@example.com is the account Claude Code is on" "$T/out" && [ -e "$C_FILE" ] \
+    && [ "$(grep -ac "Claude Code accounts" "$T/out")" = 2 ]'
+mkdir -p "$T/nobody/.claude"
+printf 'd\nq\n' | HOME=$T/nobody script -qfc "$SCRIPT" /dev/null > "$T/out" 2>&1
+check "prompt delete with no account" 'grep -aq "There is no account to delete." "$T/out"'
+
 printf '%d passed, %d failed\n' "$passes" "$fails"
 [ "$fails" -eq 0 ]

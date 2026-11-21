@@ -57,7 +57,7 @@ sign-in, and everything else stays shared.
   gateway key. The credit of an Anthropic API key is not readable, and they say so.
 - Automatic switching, once you turn it on: the machine stays on the best account with room, and a session
   that meets a limit moves to the next account and carries on by itself.
-- An interactive prompt, `list`, `rename`, and Tab completion in bash.
+- An interactive prompt, `list`, `rename`, `delete`, and Tab completion in bash.
 - No token is ever printed or put on a command line. The logins stay in `~/.claude-accounts`, readable
   only by you.
 
@@ -163,11 +163,12 @@ the week resets, or of the budget of a gateway key. See [docs/auto.md](docs/auto
 
 | Command | What it does |
 |---|---|
-| `claude-switch` | Opens a numbered list of the accounts: type a number to switch, `a` to add an account, a subscription or a key, `r` to rename one, `q` to quit. |
+| `claude-switch` | Opens a numbered list of the accounts: type a number to switch, `a` to add an account, a subscription or a key, `r` to rename one, `d` to delete one, `q` to quit. |
 | `claude-switch NAME` | Switches to the account `NAME`, a name or an email. |
 | `claude-switch list` | Prints the accounts and what each has left. `*` marks the active one. |
 | `claude-switch login [ACCOUNT] [--switch] [OPTIONS]` | Signs in an account and saves it, without switching unless with `--switch`. With `ACCOUNT`, renews the sign-in of that account. `OPTIONS` go to `claude auth login`. |
 | `claude-switch rename NAME NEW_NAME` | Renames an account. |
+| `claude-switch delete NAME` | Deletes an account: a gateway key as `key remove` does, a claude.ai account with its login saved here and its saved sessions of Chrome and Desktop. Not the account Claude Code is on. |
 | `claude-switch key import NAME` | Saves the gateway key in `~/.claude/settings.json` as the account `NAME`. |
 | `claude-switch key add NAME [--switch] [OPTIONS]` | Saves another gateway key, and switches to it with `--switch`. Its token is asked on the terminal, where it shows as you type or paste it, or read from the standard input. |
 | `claude-switch key renew NAME` | Gives a gateway key a new token. |

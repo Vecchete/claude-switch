@@ -152,6 +152,10 @@ Usage:
   claude-switch key remove NAME          Forget the gateway key NAME, and take it out of
                                          ~/.claude/settings.json when it is active.
   claude-switch rename NAME NEW_NAME     Rename an account.
+  claude-switch delete NAME              Delete the account NAME: a gateway key as key remove does, a
+                                         claude.ai account with its login saved here and its saved
+                                         sessions of claude.ai in Chrome and of Desktop. Not the account
+                                         Claude Code is on.
   claude-switch refresh [--force]        Refresh the login of the accounts that are not active.
                                          The claude-switch-refresh timer runs it at boot and every
                                          4 hours. --force refreshes them even when not due.
@@ -191,8 +195,7 @@ The credit an Anthropic API key has left is not readable: no API gives it out, a
 the Claude Console shows it.
 
 Don't use /logout on an account you want to keep: it revokes the login saved here too.
-To forget an account, remove its file in ~/.claude-accounts, or a gateway key with claude-switch key
-remove NAME.
+To forget an account, delete it with claude-switch delete NAME, or with d in the prompt.
 EOF
 }
 
@@ -325,7 +328,7 @@ name_problem() {
             printf 'A name must not be empty, start with - or hold control characters.'
             return 0
             ;;
-        list|login|key|rename|refresh|help|auto|watch|hook)
+        list|login|key|rename|delete|refresh|help|auto|watch|hook)
             printf '%s is a command of this script, choose another name.' "$1"
             return 0
             ;;
@@ -653,7 +656,7 @@ key_renew() {
 key_remove() {
     local file
     file=$(require_account "$1") || exit 1
-    is_key "$file" || die "$1 is a claude.ai account. To forget it, remove ~/.claude-accounts/${file##*/}"
+    is_key "$file" || die "$1 is a claude.ai account. To forget it: claude-switch delete $(printf %q "$1")"
     read_account "$file"
     if [ "$(live_key || true)" = "$file" ]; then
         set_key_env
@@ -1028,6 +1031,37 @@ after_adding() {
         read_account "$1"
         printf '%s Switch to it with: claude-switch %q\n' "$3" "$LABEL"
     fi
+}
+
+# Forgets the account FILE: a gateway key as key remove does, a claude.ai account with its login kept here and
+# its saved sessions of claude.ai in Chrome and of Desktop, unless another account kept here has the same
+# accountUuid, or may have it since its file can't be read. Its readings and a hold on it go too. The login in
+# ~/.claude stays, since the next run would save it again.
+delete_account() {
+    local file=$1 name=${1##*/} uuid="" other owner emptied="" shared=""
+    read_account "$file"
+    if is_key "$file"; then
+        if [ "$(live_key || true)" = "$file" ]; then
+            set_key_env
+            emptied=", and emptied its entries in ~/.claude/settings.json"
+        fi
+    else
+        [ "$file" != "$(live_file || true)" ] \
+            || die "$LABEL is the account Claude Code is on: switch to another one before you delete it."
+        uuid=$(jq -r '.oauthAccount.accountUuid // empty' "$file")
+    fi
+    rm -f "$file" "$STORE/.usage/${name%.json}.json" "$STORE/.usage/${name%.json}.refused.json"
+    [ ! -f "$HOLD" ] || [ "$(head -n 1 "$HOLD")" != "$name" ] || rm -f "$HOLD"
+    # A uuid names the files of the saved sessions, so it must be one.
+    if [[ $uuid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+        for other in "$STORE"/*.json; do
+            owner=$(jq -er 'if type == "object" then .oauthAccount.accountUuid // "" else error end' "$other" 2>/dev/null) \
+                || owner=$uuid
+            [ "$owner" != "$uuid" ] || shared=yes
+        done
+        [ -n "$shared" ] || rm -f "$STORE/.web/$uuid.json" "$STORE/.desktop/$uuid.json"
+    fi
+    printf 'Deleted %s%s.\n' "$LABEL" "$emptied"
 }
 
 rename_account() {
@@ -1637,6 +1671,27 @@ prompt_rename() {
     (lock_store && rename_account "${files[row - 1]}" "$new") || true
 }
 
+# Asks which account to delete, and whether to, no by default. A refusal ends the deletion, not the prompt.
+prompt_delete() {
+    local row=1 answer
+    if [ "${#files[@]}" -eq 0 ]; then
+        printf 'There is no account to delete.\n'
+        return 0
+    elif [ "${#files[@]}" -gt 1 ]; then
+        read -r -p 'Delete which one (number)? ' row || return 0
+        [ -n "$row" ] || return 0
+        if ! is_row "$row" "${#files[@]}"; then
+            printf 'There is no account %s.\n' "$row"
+            return 0
+        fi
+    fi
+    read_account "${files[row - 1]}"
+    read -r -p "Delete $LABEL? [y/N] " answer || return 0
+    case $(trim "$answer") in
+        y|Y|yes|Yes|YES) (lock_store && delete_account "${files[row - 1]}") || true ;;
+    esac
+}
+
 # Asks whether the new account is a subscription or a key, and whether the machine goes to it once it's in, then
 # signs it in or keeps the key. Each runs as a claude-switch of its own, so a refusal ends that run and not the
 # prompt.
@@ -1708,7 +1763,7 @@ cmd_prompt() {
         remind_unkept_key
         [ -z "$live" ] || remind_overrides "$live"
         remind_signins
-        printf '\n   a) Add an account\n   r) Rename an account\n   q) Quit\n\n'
+        printf '\n   a) Add an account\n   r) Rename an account\n   d) Delete an account\n   q) Quit\n\n'
         if ! read -r -p 'Select an account to switch to: ' choice; then
             printf '\n'
             return 0
@@ -1717,6 +1772,7 @@ cmd_prompt() {
             q|Q) return 0 ;;
             a|A) prompt_add ;;
             r|R) prompt_rename ;;
+            d|D) prompt_delete ;;
             *)
                 if is_row "$choice" "${#files[@]}"; then
                     lock_store
@@ -1724,7 +1780,7 @@ cmd_prompt() {
                     hold_account "${files[choice - 1]}"
                     return 0
                 fi
-                printf 'Type a number from the list, a, r or q.\n'
+                printf 'Type a number from the list, a, r, d or q.\n'
                 ;;
         esac
     done
@@ -1795,6 +1851,11 @@ case ${1:-} in
         [ $# -eq 3 ] || die "Usage: claude-switch rename NAME NEW_NAME"
         file=$(require_account "$2") || exit 1
         rename_account "$file" "$3"
+        ;;
+    delete)
+        [ $# -eq 2 ] || die "Usage: claude-switch delete NAME"
+        file=$(require_account "$2") || exit 1
+        delete_account "$file"
         ;;
     auto)
         shift

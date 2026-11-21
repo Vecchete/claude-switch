@@ -482,5 +482,28 @@ check "key add --switch: kept, then switched to" 'grep -q "^Kept the gateway key
 check "key import --switch: refused, it's the key in use already" \
     '[ "$rc" -ne 0 ] && grep -q "Usage: claude-switch key import NAME" "$T/out" && [ ! -e "$HOME/.claude-accounts/key_other.json" ]'
 
+# delete: a gateway key goes as key remove does. The login in ~/.claude stays while a key is active, since the
+# next run would keep it again.
+"$SCRIPT" delete a@example.com > "$T/out" 2>&1; rc=$?
+check "delete the login under a key: refused" \
+    '[ "$rc" -ne 0 ] && grep -qx "claude-switch: a@example.com is the account Claude Code is on: switch to another one before you delete it." "$T/out" \
+    && ls "$HOME"/.claude-accounts/a@example.com_*.json'
+"$SCRIPT" delete k10 > "$T/out" 2>&1
+check "delete a key: gone" 'grep -qx "Deleted k10." "$T/out" && [ ! -e "$HOME/.claude-accounts/key_k10.json" ] && marked sw1'
+mkdir -p "$HOME/.claude-accounts/.usage"
+printf '{}\n' > "$HOME/.claude-accounts/.usage/key_sw1.json"
+printf 'key_sw1.json\n' > "$HOME/.claude-accounts/.hold"
+"$SCRIPT" delete sw1 > "$T/out" 2>&1
+check "delete the active key: its entries emptied" \
+    'grep -qx "Deleted sw1, and emptied its entries in ~/.claude/settings.json." "$T/out" \
+    && [ ! -e "$HOME/.claude-accounts/key_sw1.json" ] && emptied ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL'
+check "delete a key: its reading and the hold on it go too" \
+    '[ ! -e "$HOME/.claude-accounts/.usage/key_sw1.json" ] && [ ! -e "$HOME/.claude-accounts/.hold" ]'
+"$SCRIPT" delete > "$T/out" 2>&1; rc=$?
+check "delete without a name: the usage" '[ "$rc" -ne 0 ] && grep -q "Usage: claude-switch delete NAME" "$T/out"'
+"$SCRIPT" key remove a@example.com > "$T/out" 2>&1; rc=$?
+check "key remove of a claude.ai account: says how to forget it" \
+    '[ "$rc" -ne 0 ] && grep -q "a@example.com is a claude.ai account. To forget it: claude-switch delete a@example.com" "$T/out"'
+
 printf '%d passed, %d failed\n' "$passes" "$fails"
 [ "$fails" -eq 0 ]

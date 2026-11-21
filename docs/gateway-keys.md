@@ -73,7 +73,8 @@ An empty URL keeps an Anthropic API key, as `key add NAME --api-key` does, and a
 and model names stay. When the key is the active one, `settings.json` gets the new token too.
 
 `key remove NAME` forgets a key. When it's the active one, its entries are emptied in `settings.json`
-first, so Claude Code uses the claude.ai login again.
+first, so Claude Code uses the claude.ai login again. `claude-switch delete NAME`, or `d` in the prompt,
+does the same, and takes the key's readings with it.
 
 ## Switching
 

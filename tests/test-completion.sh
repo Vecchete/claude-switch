@@ -45,7 +45,7 @@ account '$(touch PWNED)' x@example.com
 jq -n '{kind: "key", name: "gw", env: {ANTHROPIC_AUTH_TOKEN: "secret"}}' > "$STORE/key_gw.json"
 LAPTOP='my\ laptop' RUN='\$\(touch\ PWNED\)'
 ACCOUNTS=(lucas@example.com work lucas@example.org "$LAPTOP" other@example.net "$RUN" x@example.com gw)
-COMMANDS=(list login key rename refresh auto help)
+COMMANDS=(list login key rename delete refresh auto help)
 BEFORE=$(cd "$STORE" && ls -A && md5sum ./*.json)
 
 offers "claude-switch " > "$T/got"
@@ -61,6 +61,8 @@ offers "claude-switch rename " > "$T/got"
 check "rename: every account" 'expect "${ACCOUNTS[@]}" | diff - "$T/got"'
 offers "claude-switch rename wo" > "$T/got"
 check "rename: an account" 'expect work | diff - "$T/got"'
+offers "claude-switch delete " > "$T/got"
+check "delete: every account" 'expect "${ACCOUNTS[@]}" | diff - "$T/got"'
 offers "claude-switch refresh " > "$T/got"
 check "refresh: --force" 'expect --force | diff - "$T/got"'
 offers "claude-switch auto " > "$T/got"
