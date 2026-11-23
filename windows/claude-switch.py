@@ -73,6 +73,8 @@ ORDER_FILE = STORE / ".auto-order"
 DEFAULT_ORDER = ("ultra", "key", "max")
 # When the last switch happened, in milliseconds.
 SWITCHED = STORE / ".switched"
+# The sessions a switch to another claude.ai account took Remote Control from, until claude-switch remote is done.
+REMOTE = STORE / ".remote.json"
 # When each session was woken, one file per session.
 WOKEN = STORE / ".woken"
 # What the automatic switches did and what claude-switch said meanwhile: a hook's stderr goes to Claude.
@@ -102,7 +104,7 @@ CACHES = ("managedSettingsNoticeSeenOrg", "additionalModelOptionsCache", "additi
           "autoCompactWindowsCache", "cachedUsageUtilization", "metricsStatusCache", "metricsStatusCacheByPrincipal",
           "githubWebConnectionStatusCache", "unusedLimitResetStatusCache", "startupPrefetchedAt")
 
-COMMANDS = ("list", "login", "key", "rename", "delete", "refresh", "help", "auto", "watch", "hook")
+COMMANDS = ("list", "login", "key", "rename", "delete", "refresh", "help", "auto", "watch", "hook", "remote")
 
 # A gateway key account is the set of these entries in the env of ~/.claude/settings.json: a token there goes before the
 # claude.ai login, and the model names and the URL belong to the gateway. A switch replaces all of them, the other
@@ -220,6 +222,10 @@ runs out.
 Adding an account doesn't switch to it, unless with --switch. With automatic switching on, the new
 account ranks with the others: added without --switch, the machine goes to it at once when it comes
 first, and added with --switch, the next check moves the machine on when another account comes first.
+
+A switch to another claude.ai account takes Remote Control from the sessions. claude-switch types
+/remote-control back in each, in its console on Windows and its tmux pane elsewhere, once it waits
+idle at an empty prompt, and names the sessions it can't bring back.
 
 The credit an Anthropic API key has left is not readable: no API gives it out, and the Billing page
 of the Claude Console shows it.
@@ -1340,6 +1346,7 @@ def switch_to(file):
             f"Sign in again: {login_hint(account.label)}")
     lock_live()
     save_live()
+    remote_save()
     apply_account(file)
     release_locks()
     if live_file() != file:
@@ -1354,6 +1361,73 @@ def switch_to(file):
     web_switch(file)
     desktop_switch(file, account.label)
     remote_control_switch(account.label)
+    remote_follow()
+
+
+def remote_save():
+    """Remembers the sessions with Remote Control on, before a switch to another claude.ai account takes it from them:
+    Claude Code drops it within seconds and only /remote-control brings it back."""
+    usage_helper("remote", "save")
+
+
+def remote_follow():
+    """Starts claude-switch remote out of this run: the watch or the hook that switched ends long before the sessions
+    are idle again. It doesn't hold the store. Elsewhere it gets a scope of its own when the user's systemd is there to
+    give one. On Windows it's a process with no console, out of the job of the task or the hook when that job lets it
+    go."""
+    try:
+        if REMOTE.stat().st_size == 0 or helper_command(USAGE_HELPER) is None:
+            return
+    except OSError:
+        return
+    command = [sys.executable, "-I", str(SELF), "remote"]
+    quiet = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if WINDOWS:
+        detached = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        for flags in (detached | subprocess.CREATE_BREAKAWAY_FROM_JOB, detached):
+            with contextlib.suppress(OSError):
+                subprocess.Popen(command, creationflags=flags, **quiet)
+                return
+        return
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime and os.path.exists(os.path.join(runtime, "systemd", "private")) and shutil.which("systemd-run"):
+        command = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--", *command]
+    with contextlib.suppress(OSError):
+        subprocess.Popen(command, start_new_session=True, **quiet)
+
+
+def cmd_remote(arguments):
+    """Types /remote-control in the terminal of each session remote_save remembered, once it dropped Remote Control and
+    waits idle at an empty prompt, then says where it's back and where it isn't."""
+    if arguments:
+        die("Usage: claude-switch remote")
+    command = helper_command(USAGE_HELPER)
+    if command is None:
+        return 0
+    try:
+        # It waits for the sessions for minutes, as long as they take.
+        output = subprocess.run(command + ["remote", "restore"], stdin=subprocess.DEVNULL, capture_output=True,
+                                creationflags=NO_WINDOW).stdout.decode("utf-8", "replace")
+    except OSError:
+        output = ""
+    back, lost = 0, []
+    for line in output.splitlines():
+        outcome, _, name = line.partition("\t")
+        if outcome == "back":
+            back += 1
+        elif outcome == "lost":
+            lost.append(name)
+    if lost:
+        notify(f"Remote Control is off in {', '.join(lost)}",
+               "Run /remote-control in the session to bring it back on this account.")
+    elif back > 0:
+        try:
+            label = read_account(live_file()).label
+        except (OSError, TypeError, ValueError):
+            return 0
+        notify("Remote Control is back", f"In {back} session{'' if back == 1 else 's'}, under {label}: open it on "
+               "claude.ai or in the Claude app signed in to it.")
+    return 0
 
 
 def cmd_login(arguments):
@@ -2391,6 +2465,9 @@ def main(arguments):
             return 0
     elif first == "hook":
         start_hook_log()
+    elif first == "remote":
+        # It waits for the sessions for minutes, so it doesn't lock the store.
+        return cmd_remote(arguments[1:])
     lock_store()
     if credential_manager():
         if first != "list":

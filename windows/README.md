@@ -5,15 +5,17 @@ few things were never run there for real yet, see [Status](#status) and
 [Not verified yet](#not-verified-yet).
 
 The port follows `bin/claude-switch`, `share/chrome-host.py`, `share/desktop.py` and `share/usage.py` as of
-commit 301e3aa, [gateway keys](../docs/gateway-keys.md) and [automatic switching](../docs/auto.md) included. When the Linux version changes, the port changes with it:
+commit a0de2dc, [gateway keys](../docs/gateway-keys.md) and [automatic switching](../docs/auto.md) included. When the Linux version changes, the port changes with it:
 `windows/tests/run.sh` says on Linux whether it still behaves the same, and `windows\tests\run.ps1` checks
 on Windows what only Windows does.
 
 A switch moves the same things as on Linux: the login of Claude Code, the claude.ai session in Chrome,
 the sign-in of Claude Desktop, and with the last two the Remote Control registration of each account. A
-gateway key goes in and out of the `env` of `%USERPROFILE%\.claude\settings.json`, as on Linux. On
-Windows a switch also brings along a Remote Control server started with `claude remote-control`, and the
-settings Claude Desktop keeps per account, which go over to the next account.
+gateway key goes in and out of the `env` of `%USERPROFILE%\.claude\settings.json`, as on Linux. After a
+switch to another claude.ai account, `/remote-control` is typed again in the sessions that lost Remote
+Control, in their console where Linux types in their tmux pane. On Windows a switch also brings along a
+Remote Control server started with `claude remote-control`, and the settings Claude Desktop keeps per
+account, which go over to the next account.
 
 ## Status
 
@@ -24,7 +26,7 @@ settings Claude Desktop keeps per account, which go over to the next account.
 | Automatic switching | `claude-switch.py`, `usage.py`, the scheduled task `claude-switch-watch` | `auto on` and `off`, `auto order`, the LEFT column, the watch and the hook pass on a scratch profile against a stand-in usage endpoint and gateway. On the test machine `list` read both subscriptions, `auto on` wrote the hook and turned the task on, and the task ran from Task Scheduler with result 0. No real session has met a limit with it on Windows yet |
 | claude.ai in Chrome | `chrome-host.py`, `chrome-host.cmd`, and the extension of `share/chrome-extension` as it is | The named pipe works end to end with a stand-in extension, a second host and the pending file. Not tried with the extension loaded in Chrome yet |
 | Claude Desktop | `desktop.py`, `localstorage.py` | Finds the folder, the main process and the account of a running Desktop. Switch, quit and the carrying over pass on a scratch profile, and the carrying over ran both ways on a copy of real Desktop data. Never quit or switched for real |
-| Remote Control | `claude-switch.py`, `chrome-host.py`, `desktop.py` | The registration cookie moves with Chrome and Desktop, as on Linux. A `claude remote-control` server is stopped when you answer yes |
+| Remote Control | `claude-switch.py`, `usage.py`, `chrome-host.py`, `desktop.py` | The registration cookie moves with Chrome and Desktop, as on Linux. A `claude remote-control` server is stopped when you answer yes. After a switch, `/remote-control` is typed in the console of each session that had Remote Control: it passes with stand-in sessions in consoles of their own, and Claude Code 2.1.302 took an Enter written the same way in its own console. Never run after a real switch yet |
 | Background refresh | The scheduled task `claude-switch-refresh`, registered by `install.ps1` | Ran from Task Scheduler with result 0, and wrote its log |
 | Notifications | `notify.ps1` | The toast shows, and it's in the notification center |
 | Tab completion | `completion.ps1` | Windows PowerShell 5.1 and PowerShell 7.6.9 |
@@ -69,7 +71,7 @@ The places of the Linux version, under the user profile:
 | `~/.local/share/claude-switch/` | `%USERPROFILE%\.local\share\claude-switch\` | `claude-switch.py`, the helpers (`usage.py` among them), `notify.ps1`, `completion.ps1`, the extension and the host manifest |
 | `~/.claude/.credentials.json`, `~/.claude.json` | `%USERPROFILE%\.claude\.credentials.json`, `%USERPROFILE%\.claude.json` | The login and the account a switch moves |
 | `~/.claude/settings.json` | `%USERPROFILE%\.claude\settings.json` | Where the entries of a gateway key go, in its `env` |
-| `~/.claude-accounts/` | `%USERPROFILE%\.claude-accounts\` | The accounts, the gateway keys (`key_<name>.json`), the saved sessions, the lock, `.task.log`, and what automatic switching keeps: `.auto`, `.auto-order`, `.usage\`, `.hold`, `.switched`, `.woken\` and `.auto.log` |
+| `~/.claude-accounts/` | `%USERPROFILE%\.claude-accounts\` | The accounts, the gateway keys (`key_<name>.json`), the saved sessions, the lock, `.task.log`, what automatic switching keeps: `.auto`, `.auto-order`, `.usage\`, `.hold`, `.switched`, `.woken\` and `.auto.log`, and `.remote.json`, the sessions a switch took Remote Control from |
 | | `%USERPROFILE%\.claude-accounts\.desktop\<accountUuid>.web\` | The storage of Desktop's window as each account left it, from which what the account lost comes back |
 | The systemd timer `claude-switch-refresh` | The scheduled task `claude-switch-refresh` | 2 and 15 minutes after logon, then every 4 hours |
 | The systemd timer `claude-switch-watch` | The scheduled task `claude-switch-watch` | Every 5 minutes, turned on only while automatic switching is |
@@ -80,6 +82,8 @@ The places of the Linux version, under the user profile:
 | `flock` on `.lock` | A byte range lock on the same file | One switch, sign-in or refresh at a time |
 | The socket `.chrome.sock` | The pipe `\\.\pipe\claude-switch-chrome-USERNAME` | claude-switch to the Chrome host |
 | `notify-send` | A toast through Windows PowerShell 5.1 | Notifications |
+| The tmux pane of a session | The console of the session | Where `/remote-control` is typed after a switch |
+| `systemd-run --user --scope` | A process with no console, out of the job of the task or the hook | Where `claude-switch remote` runs after a switch |
 
 ## Why Python
 
@@ -126,6 +130,20 @@ PowerShell does what only PowerShell does: the install, the Tab completion and t
 - A Remote Control server started with `claude remote-control` outside Desktop stays registered with the
   account it started on. In a terminal the switch asks whether to stop it, and what keeps it running
   starts it again on the new account. A server started by hand needs to be started again.
+- After a switch to another claude.ai account, `claude-switch remote` types `/remote-control` in the
+  console of each session that had Remote Control, where Linux types in its tmux pane. So a session in
+  Windows Terminal, in the console of Windows or in the terminal of an editor gets it the same way. A
+  session counts as one of a terminal when its record in `~/.claude/sessions` says its entrypoint is
+  `cli`. A short helper, `usage.py remote console`, attaches to that console with no console of its own,
+  since a process is attached to one console at most. It reads the line the cursor is on, as tmux gives it
+  on Linux, and writes key presses into the input of the console: `/remote-control`, then Enter half a
+  second later. A console only shows the program that owns it and has no copy mode for keys to go to, so
+  those two checks of Linux have nothing to check there.
+- A session of Claude Desktop has no console to type in. When it loses Remote Control, the notification
+  names it, as Linux names a session outside tmux. `claude-switch remote` itself runs as a process with no
+  console, out of the job of the task or the hook when that job lets it go, where Linux gives it a scope
+  of its own in systemd. Microsoft says the console functions it uses may not work as expected for a
+  terminal reached through SSH, so a session there may only be named, after 15 minutes.
 - Claude Code keeps the login in `.credentials.json` on Windows, as on Linux (see its authentication
   docs). Its flag `tengu_windows_credman` moves it to the Credential Manager instead. While that flag is on
   in `~/.claude.json`, every command but `list` stops and says why, since the files a switch moves would
@@ -240,7 +258,8 @@ stand-in claude, stand-in processes that hold files the way Desktop does, and a 
 their own. Every run that could end a process gets a stand-in taskkill, so they never touch the real
 accounts, Chrome or Desktop. `test-keys.py` and `test-auto.py` give a folder of their scratch profile an
 ACL that denies making files, and remove it again before they delete the folder. `test-auto.py` keeps its
-profile under a path that isn't ASCII.
+profile under a path that isn't ASCII. It also starts stand-in sessions of Claude Code in consoles of their
+own with no window (`fake-session.py`), lets a switch type in them, and reads what each one got and when.
 
 ## Behavior seen on Windows
 
@@ -279,6 +298,15 @@ These were read on the test machine, without changing anything:
   `max` for both, in the login and in the profile, and tells Ultra by the rate limit tier
   `default_claude_max_20x`. A token refresh keeps the tier the login was given, while the profile in
   `oauthAccount` is fetched again at each start of Claude Code, so the two can differ.
+- A process with no console of its own (`DETACHED_PROCESS`) can attach to the console of another
+  program, read the line its cursor is on and write key presses into its input. `AttachConsole` refuses a
+  process that already has a console. Claude Code 2.1.302 took an Enter written that way on its first
+  screen, in a console with no window, and went on to the next one.
+- In a console that is not Windows Terminal, Claude Code 2.1.302 drew the pointer of that first menu as
+  `>`. claude-switch takes `>` for the prompt as well as `❯`.
+- Each session Claude Code runs writes a record in `~/.claude/sessions`, named after its process id, with
+  its `entrypoint` (`cli` in a terminal, `claude-desktop` for a Code session of Desktop), its `status`
+  (`busy` or `idle`) and, while Remote Control is on, its `bridgeSessionId`.
 
 ## Not verified yet
 
@@ -300,6 +328,9 @@ What a tester on Windows can still check:
    bring the machine back once that limit resets, with Desktop open.
 8. Add a subscription from the prompt and answer no to the switch, with Chrome open and the extension
    loaded: once the sign-in is done, claude.ai in Chrome should be on the active account again.
+9. With a Claude Code session in Windows Terminal that has Remote Control on, switch to another claude.ai
+   account: once the session waits idle at its prompt, `/remote-control` should show there and run, and a
+   notification should say Remote Control is back under the new account.
 
 ## Sources
 
@@ -325,3 +356,10 @@ What a tester on Windows can still check:
   https://smsagent.blog/2024/10/29/popping-toast-notifications-in-powershell-core/
 - A hook with `args` is a program started with no shell, which on Windows has to be a real executable, and
   `asyncRewake` wakes the session on exit code 2: https://code.claude.com/docs/en/hooks
+- A process is attached to one console at most, `AttachConsole` refuses one that has a console, and the
+  functions that write the input of a console and read its screen may not work through SSH:
+  https://learn.microsoft.com/en-us/windows/console/attachconsole,
+  https://learn.microsoft.com/en-us/windows/console/writeconsoleinput,
+  https://learn.microsoft.com/en-us/windows/console/readconsoleoutputcharacter
+- `DETACHED_PROCESS` starts a console program with no console, and `CREATE_BREAKAWAY_FROM_JOB` needs a job
+  that allows it: https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags

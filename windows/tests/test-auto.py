@@ -22,6 +22,8 @@ import threading
 import time
 
 WINDOWS = os.name == "nt"
+# A run as claude-switch starts usage.py: with a console of its own and no window on Windows.
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if WINDOWS else 0
 HERE = pathlib.Path(__file__).resolve().parent
 SCRIPT = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else HERE.parent / "claude-switch.py").resolve()
 USAGE_PY = pathlib.Path(sys.argv[2] if len(sys.argv) > 2 else HERE.parent / "usage.py").resolve()
@@ -123,6 +125,8 @@ threading.Thread(target=server.serve_forever, daemon=True).start()
 PORT = server.server_address[1]
 root = pathlib.Path(tempfile.mkdtemp(prefix="claude-switch-auto."))
 denied = []
+# The stand-in sessions, which end with the test whatever happens.
+fixtures = []
 try:
     # The profile's path holds a letter that isn't ASCII, as a Windows user name may: what usage.py says of it comes
     # back to claude-switch whole.
@@ -620,6 +624,203 @@ try:
     check("adding while an account is held: it stays", marked("a@example.com")
           and "It stays on a@example.com, chosen by hand, until it runs out." in result.stdout)
 
+    # Remote Control after a switch to another claude.ai account. On Windows the stand-in sessions run in consoles of
+    # their own with no window, each showing its prompt: usage.py reads the line of the cursor there and types the keys.
+    def put(path, data):
+        """DATA in PATH, written aside and renamed over it, so a record is never read half written."""
+        temporary = path.with_name(f"{path.name}.test.tmp")
+        temporary.write_text(json.dumps(data), encoding="utf-8")
+        for _ in range(100):
+            try:
+                os.replace(temporary, path)
+                return
+            except PermissionError:
+                time.sleep(0.05)
+        os.replace(temporary, path)
+
+    def update(path, **fields):
+        put(path, dict(read(path), **fields))
+
+    def start_session(name, status="idle", typed="", entrypoint="cli", bridge=True, stuck=False):
+        """A stand-in session of a terminal in a console of its own with no window, and the path of its record."""
+        options = ["--status", status, "--entrypoint", entrypoint, *(["--typed", typed] if typed else []),
+                   *([] if bridge else ["--no-bridge"]), *(["--stuck"] if stuck else [])]
+        process = subprocess.Popen([sys.executable, "-I", str(HERE / "fake-session.py"), str(sessions), name,
+                                    str(state / f"keys-{name}"), *options], env=env, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
+        fixtures.append(process)
+        record = sessions / f"{process.pid}.json"
+        for _ in range(300):
+            if record.exists():
+                break
+            time.sleep(0.1)
+        return record
+
+    def keys_of(name):
+        path = state / f"keys-{name}"
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+
+    def remote(*arguments, **extra):
+        """usage.py remote, run as claude-switch runs it."""
+        return subprocess.run([sys.executable, "-I", str(share / "usage.py"), "remote", *arguments],
+                              env=dict(env, **extra), capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=120, creationflags=NO_WINDOW)
+
+    if WINDOWS:
+        timing = {"CLAUDE_SWITCH_REMOTE_DROP": "3", "CLAUDE_SWITCH_REMOTE_BACK": "3", "CLAUDE_SWITCH_REMOTE_WAIT": "20"}
+        records = {name: start_session(name, **options) for name, options in (
+            ("idle", {}), ("busy", {"status": "busy"}), ("typing", {"typed": "fix the tests"}),
+            ("elsewhere", {"entrypoint": "claude-desktop"}), ("without", {"bridge": False}), ("keeps", {}),
+            ("stuck", {"stuck": True}))}
+        check("remote, Windows: the stand-in sessions run", all(path.exists() for path in records.values()))
+        # Started as console() in usage.py starts it, with no console of its own to leave.
+        x, _, line = subprocess.run([sys.executable, "-I", str(share / "usage.py"), "remote", "console",
+                                     str(read(records["idle"])["pid"]), "line"], env=env, capture_output=True,
+                                    text=True, encoding="utf-8", errors="replace", timeout=60,
+                                    creationflags=subprocess.DETACHED_PROCESS).stdout.partition("\t")
+        check("remote console: the line of the cursor, read in the console of a session",
+              x == "2" and line.startswith(chr(0x276F) + chr(0xA0)) and not line[2:].strip())
+        result = remote("save", **timing)
+        saved = read(store / ".remote.json")["sessions"] if (store / ".remote.json").exists() else []
+        check("remote save: the sessions with Remote Control on", result.returncode == 0 and sorted(
+            entry["name"] for entry in saved) == ["busy", "elsewhere", "idle", "keeps", "stuck", "typing"])
+        panes = {entry["name"]: entry["pane"] for entry in saved}
+        check("remote save: a session of a terminal has its console, one of Desktop none",
+              panes.get("idle") == "console" and "elsewhere" in panes and panes["elsewhere"] is None)
+        # Claude Code drops Remote Control within seconds of the switch, but in a session that keeps it.
+        for name in ("idle", "busy", "typing", "elsewhere", "stuck"):
+            update(records[name], bridgeSessionId=None)
+        restore = subprocess.Popen([sys.executable, "-I", str(share / "usage.py"), "remote", "restore"],
+                                   env=dict(env, **timing), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                                   encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
+        time.sleep(2.5)
+        check("remote restore: one at a time", remote("restore", **timing).returncode == 1)
+        # The busy session stays busy until the restore typed in the others and went past it once more, which it does
+        # in a step of its own, saved at its end, however slow the machine is.
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline and not all(
+                keys_of(name)[-1:] and keys_of(name)[-1]["key"] == "\r" for name in ("idle", "stuck")):
+            time.sleep(0.1)
+
+        def saved_at():
+            try:
+                return (store / ".remote.json").stat().st_mtime_ns
+            except OSError:
+                return None
+        mark = saved_at()
+        while time.monotonic() < deadline and saved_at() == mark:
+            time.sleep(0.1)
+        update(records["busy"], status="idle")
+        said, _ = restore.communicate(timeout=120)
+        outcomes = dict(reversed(entry.split("\t")) for entry in said.splitlines())
+        check("remote restore: back where it was typed and came back",
+              outcomes.get("idle") == "back" and outcomes.get("busy") == "back")
+        check("remote restore: lost where it can't be typed or didn't come back",
+              all(outcomes.get(name) == "lost" for name in ("typing", "elsewhere", "stuck")))
+        check("remote restore: nothing said of a session that kept it", "keeps" not in outcomes
+              and "without" not in outcomes)
+        check("remote restore: a session of Desktop is said first", said.splitlines()[:1] == ["lost\telsewhere"])
+        typed = {name: "".join(entry["key"] for entry in keys_of(name)) for name in records}
+        check("remote restore: /remote-control, then Enter, once in each console it could",
+              all(typed[name] == "/remote-control\r" for name in ("idle", "busy", "stuck"))
+              and not any(typed[name] for name in ("typing", "elsewhere", "without", "keeps")))
+        check("remote restore: only in an idle session",
+              all(entry["status"] == "idle" for name in records for entry in keys_of(name)))
+        check("remote restore: Enter a moment after the text, so it isn't read as a paste",
+              all(len(keys_of(name)) == 16 and keys_of(name)[-1]["at"] - keys_of(name)[-2]["at"] >= 0.4
+                  for name in ("idle", "busy", "stuck")))
+        check("remote restore: nothing left", not (store / ".remote.json").exists())
+        for process in fixtures:
+            process.kill()
+            process.wait()
+        fixtures.clear()
+        for path in records.values():
+            path.unlink(missing_ok=True)
+
+    # A switch remembers the sessions with Remote Control on, and claude-switch remote, started apart, types
+    # /remote-control there once Claude Code dropped it and the session waits idle at an empty prompt.
+    timing = {"CLAUDE_SWITCH_REMOTE_DROP": "10", "CLAUDE_SWITCH_REMOTE_BACK": "10", "CLAUDE_SWITCH_REMOTE_WAIT": "20"}
+    if WINDOWS:
+        rc_record = start_session("rc-session")
+
+        def typed_keys():
+            return "".join(entry["key"] for entry in keys_of("rc-session"))
+    else:
+        fake_tmux = state / "tmux"
+        fake_tmux.mkdir()
+        shutil.copy2(HERE.parent.parent / "tests" / "fake-tmux.py", bin_ / "tmux")
+        (bin_ / "tmux").chmod(0o755)
+        sleeper = subprocess.Popen(["sleep", "300"])
+        fixtures.append(sleeper)
+        rc_record = sessions / f"{sleeper.pid}.json"
+        put(rc_record, {"pid": sleeper.pid, "procStart": pathlib.Path(f"/proc/{sleeper.pid}/stat").read_text()
+                        .rpartition(")")[2].split()[19], "kind": "interactive", "status": "idle", "name": "rc-session",
+                        "bridgeSessionId": "session_old", "tmux": "claude-rc:@1.%1"})
+        put(fake_tmux / "panes.json", {"%1": {"pane_pid": sleeper.pid, "x": 2, "y": 40, "mode": "0",
+                                              "line": chr(0x276F) + chr(0xA0), "record": str(rc_record),
+                                              "reconnects": True}})
+        timing["FAKE_TMUX"] = str(fake_tmux)
+
+        def typed_keys():
+            calls = [json.loads(entry)["args"] for entry in (fake_tmux / "log").read_text().splitlines()] \
+                if (fake_tmux / "log").exists() else []
+            return "".join("\r" if args[-1] == "Enter" else args[-1] for args in calls if args[0] == "send-keys")
+    (state / "notify").unlink(missing_ok=True)
+    result = run("ultra", **timing)
+    saved = read(store / ".remote.json")["sessions"] if (store / ".remote.json").exists() else []
+    check("remote: the session with Remote Control is remembered at the switch",
+          "Switched to ultra." in result.stdout and any(entry.get("name") == "rc-session" for entry in saved))
+    try:
+        listed = subprocess.run([sys.executable, "-I", str(SCRIPT), "list"], env=dict(env, **timing), cwd=home,
+                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+        free = listed.returncode == 0 and "Waiting" not in listed.stderr
+    except subprocess.TimeoutExpired:
+        free = False
+    check("remote: the store isn't held while it waits", free)
+    # Claude Code drops Remote Control within seconds of the switch.
+    update(rc_record, bridgeSessionId=None)
+    for _ in range(300):
+        if "Remote Control is back" in log("notify"):
+            break
+        time.sleep(0.2)
+    check("remote: /remote-control typed in its terminal, then Enter", typed_keys() == "/remote-control\r")
+    check("remote: says it's back, and under which account",
+          "Remote Control is back In 1 session, under ultra: open it on claude.ai or in the Claude app signed in to it."
+          in log("notify"))
+    check("remote: done with the session", not (store / ".remote.json").exists())
+    result = run("rename", "ultra", "remote")
+    check("remote is no name", result.returncode != 0 and "remote is a command of this script" in out(result))
+    for process in fixtures:
+        process.kill()
+        process.wait()
+    fixtures.clear()
+    rc_record.unlink(missing_ok=True)
+    # A session with no terminal to type in, one of Claude Desktop on Windows, is named at once.
+    if WINDOWS:
+        rc_record = start_session("desktop-session", entrypoint="claude-desktop")
+    else:
+        sleeper = subprocess.Popen(["sleep", "300"])
+        fixtures.append(sleeper)
+        rc_record = sessions / f"{sleeper.pid}.json"
+        put(rc_record, {"pid": sleeper.pid, "procStart": pathlib.Path(f"/proc/{sleeper.pid}/stat").read_text()
+                        .rpartition(")")[2].split()[19], "kind": "interactive", "status": "idle",
+                        "name": "desktop-session", "bridgeSessionId": "session_old"})
+    (state / "notify").unlink(missing_ok=True)
+    run("a@example.com", **timing)
+    update(rc_record, bridgeSessionId=None)
+    for _ in range(300):
+        if "Remote Control is off" in log("notify"):
+            break
+        time.sleep(0.2)
+    check("remote: names the session it can't bring back, and says what to do",
+          "Remote Control is off in desktop-session Run /remote-control in the session to bring it back on this "
+          "account." in log("notify"))
+    for process in fixtures:
+        process.kill()
+        process.wait()
+    fixtures.clear()
+    rc_record.unlink(missing_ok=True)
+
     # auto off: the hook and the watch go, the rest stays, with a hook whose program is the claude-switch.
     data = read(settings)
     data["hooks"]["StopFailure"].append({"matcher": "rate_limit", "hooks": [
@@ -656,6 +857,9 @@ try:
     check("read-only settings: refused", result.returncode != 0 and "can't write" in out(result))
     check("read-only settings: automatic switching stays off", not (store / ".auto").exists())
 finally:
+    for process in fixtures:
+        process.kill()
+        process.wait()
     for folder in denied:
         if WINDOWS:
             subprocess.run(["icacls", str(folder), "/remove:d", f"*{user_sid()}"], capture_output=True)

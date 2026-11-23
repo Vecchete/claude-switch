@@ -1,8 +1,8 @@
 #!/usr/bin/env -S python3 -I
 """What each Claude account has left, the account the machine should be on, and whether a session is open. The
 Windows port of share/usage.py, which it follows function by function: a session is told by the creation time of its
-process, JSON is read as UTF-8, a reading another run has open is replaced once it lets go, and claude-switch gets
-UTF-8.
+process, JSON is read as UTF-8, a reading another run has open is replaced once it lets go, claude-switch gets UTF-8,
+and /remote-control goes to the console of a session as keys, where Linux has its tmux pane.
 
 A claude.ai account is read from the endpoint Claude Code's /usage reads, with the account's own access token.
 Claude Code keeps its last reading of the account it is on in ~/.claude.json, which goes first while it is the
@@ -29,6 +29,15 @@ resets before one that doesn't, credit nobody can read last.
                                           authentication_failed. Prints why, as a phrase
     usage.py why FILE                     why FILE can't be used now, as a phrase, exit 1 when it can
     usage.py first FILE...                the account that has room again first, and when
+    usage.py remote save                  remember the sessions with Remote Control on, before a switch to another
+                                          claude.ai account takes it from them
+    usage.py remote restore               type /remote-control in the terminal of each of them once it dropped Remote
+                                          Control and waits idle at an empty prompt: its tmux pane, its console on
+                                          Windows. Prints back or lost, a tab and the name of each session, exit 1
+                                          when another restore runs
+    usage.py remote console PID line|text TEXT|enter
+                                          Windows, for restore: where the cursor of the console of the process PID is
+                                          on its line, a tab and the text of that line, or TEXT or Enter typed there
 """
 import argparse
 import concurrent.futures
@@ -37,6 +46,7 @@ import json
 import math
 import os
 import pathlib
+import subprocess
 import sys
 import time
 import urllib.error
@@ -44,6 +54,10 @@ import urllib.parse
 import urllib.request
 
 WINDOWS = os.name == "nt"
+if WINDOWS:
+    import msvcrt
+else:
+    import fcntl
 HOME = pathlib.Path.home()
 STORE = HOME / ".claude-accounts"
 USAGE = STORE / ".usage"
@@ -62,6 +76,15 @@ KINDS = ("ultra", "key", "max")
 MINUTE = 60 * 1000
 HOLDS = {"limit": 15 * MINUTE, "rate": 5 * MINUTE, "credit": 24 * 60 * MINUTE, "budget": 60 * MINUTE,
          "sign-in": 60 * MINUTE}
+# The sessions a switch took Remote Control from, and how far bringing it back went.
+REMOTE = STORE / ".remote.json"
+# In seconds: how long a session has to drop Remote Control after the switch, which Claude Code does within seconds,
+# how long it has to be back once /remote-control was typed, and how long a session is waited for to be idle.
+REMOTE_DROP = float(os.environ.get("CLAUDE_SWITCH_REMOTE_DROP") or 60)
+REMOTE_BACK = float(os.environ.get("CLAUDE_SWITCH_REMOTE_BACK") or 30)
+REMOTE_WAIT = float(os.environ.get("CLAUDE_SWITCH_REMOTE_WAIT") or 900)
+# The prompt of Claude Code, where the cursor waits when nothing is typed.
+PROMPTS = (chr(0x276F), ">")
 
 
 def now_ms():
@@ -603,18 +626,290 @@ def started_at(pid):
         return None
 
 
+def live_session(path):
+    """The record of a session at PATH while its process runs: the pid it was started with, started at the same
+    moment. None for any other."""
+    session = load(path)
+    if session is None:
+        return None
+    try:
+        running = started_at(int(session.get("pid")))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    started = session.get("procStart")
+    if running is not None and (started is None or running == str(started)):
+        return session
+    return None
+
+
 def command_sessions(arguments):
-    """A session counts while its process runs: the pid it was started with, started at the same moment."""
-    for path in SESSIONS.glob("*.json"):
-        session = load(path) or {}
+    return 0 if any(live_session(path) for path in SESSIONS.glob("*.json")) else 1
+
+
+def parent_of(pid):
+    try:
+        return int(pathlib.Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def descends(pid, ancestor):
+    """True when the process PID is ANCESTOR or runs under it."""
+    for _ in range(64):
+        if pid == ancestor:
+            return True
+        if pid is None or pid <= 1:
+            return False
+        pid = parent_of(pid)
+    return False
+
+
+def tmux(*arguments):
+    try:
+        result = subprocess.run(["tmux", *arguments], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def console(pid, *request):
+    """Windows: what usage.py remote console says of the console of the process PID, None when it can't. It runs apart,
+    with no console of its own: a process is attached to one console at most, and this one keeps its own."""
+    try:
+        result = subprocess.run([sys.executable, "-I", str(pathlib.Path(__file__).resolve()), "remote", "console",
+                                 str(pid), *request], stdin=subprocess.DEVNULL, capture_output=True, timeout=30,
+                                creationflags=subprocess.DETACHED_PROCESS)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.decode("utf-8", "replace") if result.returncode == 0 else None
+
+
+def at_empty_prompt(pane, pid):
+    """True when PANE shows the Claude Code of PID, out of copy mode, its cursor at a prompt with nothing typed. On
+    Windows the pane is the console of PID itself, which shows that program alone and has no copy mode for keys to go
+    to: the line its cursor is on is read there."""
+    if WINDOWS:
+        x, _, line = (console(pid, "line") or "").partition("\t")
         try:
-            running = started_at(int(session.get("pid")))
-        except (TypeError, ValueError, OverflowError):
-            continue
-        started = session.get("procStart")
-        if running is not None and (started is None or running == str(started)):
-            return 0
-    return 1
+            x = int(x)
+        except ValueError:
+            return False
+    else:
+        info = tmux("display-message", "-p", "-t", pane, "#{pane_pid}\t#{cursor_x}\t#{cursor_y}\t#{pane_in_mode}")
+        try:
+            pane_pid, x, y, mode = info.rstrip("\n").split("\t")
+            pane_pid, x, y = int(pane_pid), int(x), int(y)
+        except (AttributeError, ValueError):
+            return False
+        if mode != "0" or not descends(pid, pane_pid):
+            return False
+        line = tmux("capture-pane", "-p", "-t", pane, "-S", str(y), "-E", str(y))
+        if line is None:
+            return False
+    text = line.rstrip("\n").replace(chr(0xA0), " ").rstrip()
+    return text in PROMPTS and x == len(text) + 1
+
+
+def send_keys(pane, pid, text):
+    """TEXT typed in PANE, or Enter for "Enter": through tmux, as keys in the console of PID on Windows."""
+    if WINDOWS:
+        return console(pid, *(["enter"] if text == "Enter" else ["text", text])) is not None
+    return tmux("send-keys", "-t", pane, *(["Enter"] if text == "Enter" else ["-l", text])) is not None
+
+
+def type_remote_control(pane, pid):
+    if not send_keys(pane, pid, "/remote-control"):
+        return False
+    # Text and Enter that arrive together read as a paste, which Claude Code doesn't send.
+    time.sleep(0.5)
+    return send_keys(pane, pid, "Enter")
+
+
+def remote_lock(name):
+    STORE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return open(os.open(STORE / name, os.O_WRONLY | os.O_CREAT, 0o600), "w")
+
+
+def take(lock, wait=True):
+    """flock on LOCK, a byte range lock on Windows, as claude-switch takes the store's. False when another run holds it
+    and WAIT is off."""
+    while True:
+        try:
+            if WINDOWS:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(lock, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+            return True
+        except OSError:
+            if not wait:
+                return False
+            time.sleep(0.05)
+
+
+def command_remote_save(arguments):
+    """Remembers the sessions with Remote Control on, before a switch takes it from them: each with its tmux pane, or
+    none when it runs elsewhere. On Windows a session of a terminal has its console for a pane, and one of Claude
+    Desktop or of a program none. A session still waiting from a switch before stays."""
+    now = now_ms()
+    with remote_lock(".remote.lock") as lock:
+        take(lock)
+        kept = {entry.get("pid"): entry for entry in (load(REMOTE) or {}).get("sessions", []) if isinstance(entry, dict)}
+        for path in SESSIONS.glob("*.json"):
+            session = live_session(path)
+            if session is None or session.get("kind") != "interactive" \
+                    or not isinstance(session.get("bridgeSessionId"), str):
+                continue
+            if WINDOWS:
+                pane = "console" if session.get("entrypoint") == "cli" else None
+            else:
+                pane = str(session.get("tmux") or "").rpartition(".")[2] or None
+            kept[session.get("pid")] = {"pid": session.get("pid"), "start": session.get("procStart"), "pane": pane,
+                                        "name": str(session.get("name") or session.get("cwd") or session.get("pid")),
+                                        "since": now, "off": False, "typed": None}
+        write_private(REMOTE, {"sessions": list(kept.values())})
+    return 0
+
+
+def remote_step(entry, now):
+    """Moves one remembered session on. Returns back, lost or gone once it's done with, None while it waits."""
+    session = live_session(SESSIONS / f"{entry.get('pid')}.json")
+    if session is None or session.get("procStart") != entry.get("start"):
+        return "gone"
+    connected = isinstance(session.get("bridgeSessionId"), str)
+    if not entry.get("off"):
+        # Until it dropped Remote Control it's on the account it had: a session that keeps it needs nothing.
+        if not connected:
+            entry["off"] = True
+            return "lost" if not entry.get("pane") else None
+        return "gone" if now - entry.get("since", now) > REMOTE_DROP * 1000 else None
+    if connected:
+        return "back"
+    if entry.get("typed"):
+        return "lost" if now - entry["typed"] > REMOTE_BACK * 1000 else None
+    if now - entry.get("since", now) > REMOTE_WAIT * 1000:
+        return "lost"
+    if session.get("status") == "idle" and at_empty_prompt(entry["pane"], entry.get("pid")) \
+            and type_remote_control(entry["pane"], entry.get("pid")):
+        entry["typed"] = now_ms()
+    return None
+
+
+def command_remote_restore(arguments):
+    """Brings Remote Control back in the remembered sessions, one step each second until none waits."""
+    with remote_lock(".remote.restore.lock") as running:
+        if not take(running, wait=False):
+            return 1
+        while True:
+            with remote_lock(".remote.lock") as lock:
+                take(lock)
+                waiting = []
+                for entry in (load(REMOTE) or {}).get("sessions", []):
+                    if not isinstance(entry, dict):
+                        continue
+                    outcome = remote_step(entry, now_ms())
+                    if outcome is None:
+                        waiting.append(entry)
+                    elif outcome != "gone":
+                        print(f"{outcome}\t{entry.get('name')}", flush=True)
+                if waiting:
+                    write_private(REMOTE, {"sessions": waiting})
+                else:
+                    REMOTE.unlink(missing_ok=True)
+            if not waiting:
+                return 0
+            time.sleep(1)
+
+
+def command_remote_console(arguments):
+    """Windows: attached to the console of the process PID, prints where its cursor is on its line, a tab and the text
+    of that line (line), or presses and lets go each key of TEXT (text TEXT) or Enter (enter) there, as its keyboard
+    would. console() starts this with no console of its own. Exit 1 when it can't."""
+    import ctypes
+    from ctypes import wintypes
+    try:
+        pid, what = int(arguments.rest[0]), arguments.rest[1]
+        keys = {"enter": "\r", "text": arguments.rest[2] if len(arguments.rest) > 2 else ""}.get(what)
+        if what != "line" and not keys:
+            return 2
+    except (IndexError, ValueError):
+        return 2
+
+    class Coord(ctypes.Structure):
+        # ctypes.wintypes has it only under a private name.
+        _fields_ = (("X", wintypes.SHORT), ("Y", wintypes.SHORT))
+
+    class Buffer(ctypes.Structure):
+        _fields_ = (("dwSize", Coord), ("dwCursorPosition", Coord), ("wAttributes", wintypes.WORD),
+                    ("srWindow", wintypes.SMALL_RECT), ("dwMaximumWindowSize", Coord))
+
+    class Key(ctypes.Structure):
+        _fields_ = (("bKeyDown", wintypes.BOOL), ("wRepeatCount", wintypes.WORD), ("wVirtualKeyCode", wintypes.WORD),
+                    ("wVirtualScanCode", wintypes.WORD), ("UnicodeChar", wintypes.WCHAR),
+                    ("dwControlKeyState", wintypes.DWORD))
+
+    class Event(ctypes.Union):
+        # A key event is as large as the largest event of the union, a mouse event.
+        _fields_ = (("KeyEvent", Key),)
+
+    class Record(ctypes.Structure):
+        _fields_ = (("EventType", wintypes.WORD), ("Event", Event))
+
+    try:
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        user = ctypes.WinDLL("user32")
+        kernel.AttachConsole.argtypes = (wintypes.DWORD,)
+        kernel.SetConsoleCtrlHandler.argtypes = (wintypes.LPVOID, wintypes.BOOL)
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                       wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+        kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel.GetConsoleScreenBufferInfo.argtypes = (wintypes.HANDLE, ctypes.POINTER(Buffer))
+        kernel.ReadConsoleOutputCharacterW.argtypes = (wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, Coord,
+                                                       ctypes.POINTER(wintypes.DWORD))
+        kernel.WriteConsoleInputW.argtypes = (wintypes.HANDLE, ctypes.POINTER(Record), wintypes.DWORD,
+                                              ctypes.POINTER(wintypes.DWORD))
+        user.VkKeyScanW.restype = ctypes.c_short
+        user.VkKeyScanW.argtypes = (wintypes.WCHAR,)
+        user.MapVirtualKeyW.argtypes = (wintypes.UINT, wintypes.UINT)
+        if not kernel.AttachConsole(pid):
+            return 1
+        # Ctrl+C typed there meanwhile isn't for this run.
+        kernel.SetConsoleCtrlHandler(None, True)
+        # GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING.
+        handle = kernel.CreateFileW("CONOUT$" if what == "line" else "CONIN$", 0xC0000000, 3, None, 3, 0, None)
+        if not handle or handle == wintypes.HANDLE(-1).value:
+            return 1
+        try:
+            if what == "line":
+                buffer = Buffer()
+                if not kernel.GetConsoleScreenBufferInfo(handle, ctypes.byref(buffer)) or buffer.dwSize.X <= 0:
+                    return 1
+                cells = ctypes.create_unicode_buffer(buffer.dwSize.X)
+                count = wintypes.DWORD()
+                if not kernel.ReadConsoleOutputCharacterW(handle, cells, buffer.dwSize.X,
+                                                          Coord(0, buffer.dwCursorPosition.Y),
+                                                          ctypes.byref(count)):
+                    return 1
+                print(f"{buffer.dwCursorPosition.X}\t{cells[:count.value]}", end="", flush=True)
+                return 0
+            records = (Record * (2 * len(keys)))()
+            for at, char in enumerate(keys):
+                found = user.VkKeyScanW(char)
+                virtual = found & 0xFF if found != -1 else 0
+                scan = user.MapVirtualKeyW(virtual, 0) if virtual else 0
+                for half, down in enumerate((True, False)):
+                    # KEY_EVENT. The character carries the key, so no Shift or AltGr goes with it.
+                    records[2 * at + half].EventType = 1
+                    records[2 * at + half].Event.KeyEvent = Key(down, 1, virtual, scan, char, 0)
+            written = wintypes.DWORD()
+            if not kernel.WriteConsoleInputW(handle, records, len(records), ctypes.byref(written)):
+                return 1
+            return 0 if written.value == len(records) else 1
+        finally:
+            kernel.CloseHandle(handle)
+    except Exception:
+        return 1
 
 
 def main(argv):
@@ -638,7 +933,15 @@ def main(argv):
     refuse.add_argument("reason")
     refuse.add_argument("message", nargs="?", default="")
     commands.add_parser("why").add_argument("file")
+    remote = commands.add_parser("remote")
+    remote.add_argument("step", choices=("save", "restore", "console"))
+    remote.add_argument("rest", nargs="*")
     arguments = parser.parse_args(argv)
+    if arguments.command == "remote":
+        if arguments.step != "console" and arguments.rest:
+            parser.error(f"remote {arguments.step} takes no argument")
+        return {"save": command_remote_save, "restore": command_remote_restore,
+                "console": command_remote_console}[arguments.step](arguments)
     return {"sessions": command_sessions, "read": command_read, "left": command_left, "best": command_best,
             "refuse": command_refuse, "why": command_why, "first": command_first}[arguments.command](arguments)
 
