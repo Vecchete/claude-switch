@@ -75,6 +75,8 @@ DEFAULT_ORDER = ("ultra", "key", "max")
 SWITCHED = STORE / ".switched"
 # The sessions a switch to another claude.ai account took Remote Control from, until claude-switch remote is done.
 REMOTE = STORE / ".remote.json"
+# Where nothing can type /remote-control back: outside a terminal on Windows, outside tmux elsewhere.
+REMOTE_WHERE = "outside a terminal" if WINDOWS else "outside tmux"
 # When each session was woken, one file per session.
 WOKEN = STORE / ".woken"
 # What the automatic switches did and what claude-switch said meanwhile: a hook's stderr goes to Claude.
@@ -150,6 +152,8 @@ DESKTOP_KEPT = False
 # The account the last route went to, and why, for the hook.
 ROUTED_TO = ""
 ROUTED_WHY = ""
+# The sessions the last route stayed for, which a switch would take Remote Control from for good.
+ROUTED_HELD = ""
 # What each account has left, by file, for list and the prompt.
 LEFT_OF = {}
 # ~/.claude-accounts/.auto.log while what claude-switch and its helpers say goes there, and where a hook's last
@@ -225,7 +229,9 @@ first, and added with --switch, the next check moves the machine on when another
 
 A switch to another claude.ai account takes Remote Control from the sessions. claude-switch types
 /remote-control back in each, in its console on Windows and its tmux pane elsewhere, once it waits
-idle at an empty prompt, and names the sessions it can't bring back.
+idle at an empty prompt, and names the sessions it can't bring back. While one it can't type in has
+Remote Control on, automatic switching doesn't go to a better claude.ai account, only away from one
+that runs out.
 
 The credit an Anthropic API key has left is not readable: no API gives it out, and the Billing page
 of the Claude Console shows it.
@@ -2034,9 +2040,13 @@ def auto_status():
         print(f"{read_account(held).label} was chosen by hand, it stays until it runs out.")
     files = accounts()
     usage_helper("read", "--timeout", "5", *files)
-    best = best_of(files, active=active_file())
+    active = active_file()
+    best = best_of(files, active=active)
     if best is not None:
         print(f"The best account with room now is {read_account(best).label}.")
+        waiting = remote_holds(best, active) if best != active else None
+        if waiting:
+            print(f"It waits to go there while Remote Control runs {REMOTE_WHERE} in {waiting}.")
     else:
         print("No account has room now.")
 
@@ -2046,6 +2056,19 @@ def nothing_left():
     status, first = usage_helper("first", *accounts())
     first = first.strip() if status == 0 else ""
     notify_once("nothing", "No Claude account has room", f"The first to have room again: {first}." if first else "")
+
+
+def remote_holds(best, active):
+    """The sessions a move from ACTIVE to BEST would take Remote Control from for good, the ones outside tmux, outside
+    a terminal on Windows, when BEST is another claude.ai account and ACTIVE still has room, so the move isn't needed.
+    None when there are none."""
+    if active is None or helper_command(USAGE_HELPER) is None or is_key(best) or best == live_file():
+        return None
+    if usage_helper("why", active)[0] == 0:
+        return None
+    status, output = usage_helper("remote", "held")
+    names = [name for name in output.splitlines() if name]
+    return ", ".join(names) if status == 0 and names else None
 
 
 def trim_log():
@@ -2081,9 +2104,10 @@ def to_log():
 
 def route():
     """Puts the machine on the best account that has room, when the active one isn't that account, and says so.
-    ROUTED_TO and ROUTED_WHY tell where it went and why. False when no account has room."""
-    global AUTO, DESKTOP_KEPT, ROUTED_TO, ROUTED_WHY
-    ROUTED_TO = ROUTED_WHY = ""
+    ROUTED_TO and ROUTED_WHY tell where it went and why, ROUTED_HELD the sessions it stays for. False when no account
+    has room."""
+    global AUTO, DESKTOP_KEPT, ROUTED_TO, ROUTED_WHY, ROUTED_HELD
+    ROUTED_TO = ROUTED_WHY = ROUTED_HELD = ""
     DESKTOP_KEPT = False
     active = active_file()
     files = accounts()
@@ -2098,6 +2122,15 @@ def route():
     if hold is not None and best != hold:
         HOLD.unlink(missing_ok=True)
     if best == active:
+        return True
+    # Remote Control where nothing can type it back goes for good with the account: the better account waits for those
+    # sessions.
+    ROUTED_HELD = remote_holds(best, active) or ""
+    if ROUTED_HELD:
+        staying, going = read_account(active).label, read_account(best).label
+        notify_once("remote-held", f"It stays on {staying}",
+                    f"Remote Control runs {REMOTE_WHERE} in {ROUTED_HELD}, and a switch to {going} would take it from "
+                    f"them for good. It moves on once they end, or once {staying} runs out.")
         return True
     ROUTED_TO = read_account(best).label
     if active is None:
@@ -2127,7 +2160,10 @@ def route_and_say():
         print("No account has room now.")
     elif not ROUTED_TO and active_file() is not None:
         active = active_file()
-        if held_file() == active:
+        if ROUTED_HELD:
+            print(f"It stays on {read_account(active).label} while Remote Control runs {REMOTE_WHERE} in "
+                  f"{ROUTED_HELD}: a switch would take it from them.")
+        elif held_file() == active:
             print(f"It stays on {read_account(active).label}, chosen by hand, until it runs out.")
         else:
             print(f"It stays on {read_account(active).label}, the best account with room.")

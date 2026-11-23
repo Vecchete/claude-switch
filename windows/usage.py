@@ -35,6 +35,9 @@ resets before one that doesn't, credit nobody can read last.
                                           Control and waits idle at an empty prompt: its tmux pane, its console on
                                           Windows. Prints back or lost, a tab and the name of each session, exit 1
                                           when another restore runs
+    usage.py remote held                  the sessions with Remote Control on that restore couldn't type in, outside
+                                          tmux, or on Windows outside a terminal whose console it can read, one name
+                                          a line, exit 1 when there are none
     usage.py remote console PID line|text TEXT|enter
                                           Windows, for restore: where the cursor of the console of the process PID is
                                           on its line, a tab and the text of that line, or TEXT or Enter typed there
@@ -710,6 +713,40 @@ def at_empty_prompt(pane, pid):
     return text in PROMPTS and x == len(text) + 1
 
 
+def pane_of(session):
+    """The tmux pane a session runs in, %N, from the session:@window.%pane Claude Code records, None outside tmux. On
+    Windows a session of a terminal has its console for a pane, one of Claude Desktop or of a program none."""
+    if WINDOWS:
+        return "console" if session.get("entrypoint") == "cli" else None
+    return str(session.get("tmux") or "").rpartition(".")[2] or None
+
+
+def name_of(session):
+    return str(session.get("name") or session.get("cwd") or session.get("pid"))
+
+
+def in_its_pane(session):
+    """True when the tmux pane of SESSION is there and runs its Claude Code. On Windows when its console can be read
+    from here, which an elevated terminal's can't."""
+    pane = pane_of(session)
+    if WINDOWS:
+        return pane is not None and console(session.get("pid"), "line") is not None
+    info = tmux("display-message", "-p", "-t", pane, "#{pane_pid}") if pane else None
+    try:
+        return descends(session.get("pid"), int(info.strip()))
+    except (AttributeError, ValueError):
+        return False
+
+
+def with_remote_control():
+    """The records of the running interactive sessions with Remote Control on."""
+    for path in SESSIONS.glob("*.json"):
+        session = live_session(path)
+        if session is not None and session.get("kind") == "interactive" \
+                and isinstance(session.get("bridgeSessionId"), str):
+            yield session
+
+
 def send_keys(pane, pid, text):
     """TEXT typed in PANE, or Enter for "Enter": through tmux, as keys in the console of PID on Windows."""
     if WINDOWS:
@@ -755,20 +792,21 @@ def command_remote_save(arguments):
     with remote_lock(".remote.lock") as lock:
         take(lock)
         kept = {entry.get("pid"): entry for entry in (load(REMOTE) or {}).get("sessions", []) if isinstance(entry, dict)}
-        for path in SESSIONS.glob("*.json"):
-            session = live_session(path)
-            if session is None or session.get("kind") != "interactive" \
-                    or not isinstance(session.get("bridgeSessionId"), str):
-                continue
-            if WINDOWS:
-                pane = "console" if session.get("entrypoint") == "cli" else None
-            else:
-                pane = str(session.get("tmux") or "").rpartition(".")[2] or None
-            kept[session.get("pid")] = {"pid": session.get("pid"), "start": session.get("procStart"), "pane": pane,
-                                        "name": str(session.get("name") or session.get("cwd") or session.get("pid")),
-                                        "since": now, "off": False, "typed": None}
+        for session in with_remote_control():
+            kept[session.get("pid")] = {"pid": session.get("pid"), "start": session.get("procStart"),
+                                        "pane": pane_of(session), "name": name_of(session), "since": now,
+                                        "off": False, "typed": None}
         write_private(REMOTE, {"sessions": list(kept.values())})
     return 0
+
+
+def command_remote_held(arguments):
+    """The sessions a switch would take Remote Control from for good: nothing can type /remote-control outside tmux,
+    nor on Windows outside a terminal whose console it can read."""
+    held = [name_of(session) for session in with_remote_control() if not in_its_pane(session)]
+    for name in held:
+        print(name)
+    return 0 if held else 1
 
 
 def remote_step(entry, now):
@@ -934,13 +972,13 @@ def main(argv):
     refuse.add_argument("message", nargs="?", default="")
     commands.add_parser("why").add_argument("file")
     remote = commands.add_parser("remote")
-    remote.add_argument("step", choices=("save", "restore", "console"))
+    remote.add_argument("step", choices=("save", "restore", "held", "console"))
     remote.add_argument("rest", nargs="*")
     arguments = parser.parse_args(argv)
     if arguments.command == "remote":
         if arguments.step != "console" and arguments.rest:
             parser.error(f"remote {arguments.step} takes no argument")
-        return {"save": command_remote_save, "restore": command_remote_restore,
+        return {"save": command_remote_save, "restore": command_remote_restore, "held": command_remote_held,
                 "console": command_remote_console}[arguments.step](arguments)
     return {"sessions": command_sessions, "read": command_read, "left": command_left, "best": command_best,
             "refuse": command_refuse, "why": command_why, "first": command_first}[arguments.command](arguments)

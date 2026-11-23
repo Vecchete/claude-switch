@@ -3,9 +3,11 @@
 (CREATE_NO_WINDOW), it shows the prompt of Claude Code there with the cursor after it and TEXT typed at it, writes the
 record Claude Code keeps in SESSIONS, and logs in LOG each key it reads, with the status its record has at that moment
 and when it came. Enter after /remote-control sets bridgeSessionId in its record, as /remote-control does in Claude
-Code, unless --stuck. Windows only.
+Code, unless --stuck. With --no-console it is started with no console at all (DETACHED_PROCESS): it only writes its
+record and waits, a session of a terminal whose console nothing can read. Windows only.
 
 Usage: fake-session.py SESSIONS NAME LOG [--status STATUS] [--typed TEXT] [--entrypoint NAME] [--no-bridge] [--stuck]
+                       [--no-console]
 """
 import argparse
 import ctypes
@@ -75,14 +77,18 @@ def main():
     parser.add_argument("--entrypoint", default="cli")
     parser.add_argument("--no-bridge", action="store_true")
     parser.add_argument("--stuck", action="store_true")
+    parser.add_argument("--no-console", action="store_true")
     arguments = parser.parse_args()
     record = pathlib.Path(arguments.sessions) / f"{os.getpid()}.json"
-    show(chr(0x276F) + chr(0xA0) + arguments.typed)
+    if not arguments.no_console:
+        show(chr(0x276F) + chr(0xA0) + arguments.typed)
     data = {"pid": os.getpid(), "procStart": creation_time(), "kind": "interactive", "status": arguments.status,
             "name": arguments.name, "entrypoint": arguments.entrypoint}
     if not arguments.no_bridge:
         data["bridgeSessionId"] = "session_old"
     put(record, data)
+    while arguments.no_console:
+        time.sleep(60)
     typed = ""
     with open(arguments.log, "a", encoding="utf-8") as log:
         while True:

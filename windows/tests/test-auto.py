@@ -641,13 +641,16 @@ try:
     def update(path, **fields):
         put(path, dict(read(path), **fields))
 
-    def start_session(name, status="idle", typed="", entrypoint="cli", bridge=True, stuck=False):
-        """A stand-in session of a terminal in a console of its own with no window, and the path of its record."""
+    def start_session(name, status="idle", typed="", entrypoint="cli", bridge=True, stuck=False, console=True):
+        """A stand-in session of a terminal in a console of its own with no window, or with no console at all, and the
+        path of its record."""
         options = ["--status", status, "--entrypoint", entrypoint, *(["--typed", typed] if typed else []),
-                   *([] if bridge else ["--no-bridge"]), *(["--stuck"] if stuck else [])]
+                   *([] if bridge else ["--no-bridge"]), *(["--stuck"] if stuck else []),
+                   *([] if console else ["--no-console"])]
         process = subprocess.Popen([sys.executable, "-I", str(HERE / "fake-session.py"), str(sessions), name,
                                     str(state / f"keys-{name}"), *options], env=env, stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   creationflags=NO_WINDOW if console else subprocess.DETACHED_PROCESS)
         fixtures.append(process)
         record = sessions / f"{process.pid}.json"
         for _ in range(300):
@@ -671,7 +674,7 @@ try:
         records = {name: start_session(name, **options) for name, options in (
             ("idle", {}), ("busy", {"status": "busy"}), ("typing", {"typed": "fix the tests"}),
             ("elsewhere", {"entrypoint": "claude-desktop"}), ("without", {"bridge": False}), ("keeps", {}),
-            ("stuck", {"stuck": True}))}
+            ("stuck", {"stuck": True}), ("noconsole", {"console": False}))}
         check("remote, Windows: the stand-in sessions run", all(path.exists() for path in records.values()))
         # Started as console() in usage.py starts it, with no console of its own to leave.
         x, _, line = subprocess.run([sys.executable, "-I", str(share / "usage.py"), "remote", "console",
@@ -683,12 +686,15 @@ try:
         result = remote("save", **timing)
         saved = read(store / ".remote.json")["sessions"] if (store / ".remote.json").exists() else []
         check("remote save: the sessions with Remote Control on", result.returncode == 0 and sorted(
-            entry["name"] for entry in saved) == ["busy", "elsewhere", "idle", "keeps", "stuck", "typing"])
+            entry["name"] for entry in saved) == ["busy", "elsewhere", "idle", "keeps", "noconsole", "stuck", "typing"])
         panes = {entry["name"]: entry["pane"] for entry in saved}
         check("remote save: a session of a terminal has its console, one of Desktop none",
               panes.get("idle") == "console" and "elsewhere" in panes and panes["elsewhere"] is None)
+        result = remote("held", **timing)
+        check("remote held: Remote Control a switch would take for good, outside a terminal or its console unread",
+              result.returncode == 0 and sorted(result.stdout.split()) == ["elsewhere", "noconsole"])
         # Claude Code drops Remote Control within seconds of the switch, but in a session that keeps it.
-        for name in ("idle", "busy", "typing", "elsewhere", "stuck"):
+        for name in ("idle", "busy", "typing", "elsewhere", "stuck", "noconsole"):
             update(records[name], bridgeSessionId=None)
         restore = subprocess.Popen([sys.executable, "-I", str(share / "usage.py"), "remote", "restore"],
                                    env=dict(env, **timing), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
@@ -716,20 +722,22 @@ try:
         check("remote restore: back where it was typed and came back",
               outcomes.get("idle") == "back" and outcomes.get("busy") == "back")
         check("remote restore: lost where it can't be typed or didn't come back",
-              all(outcomes.get(name) == "lost" for name in ("typing", "elsewhere", "stuck")))
+              all(outcomes.get(name) == "lost" for name in ("typing", "elsewhere", "stuck", "noconsole")))
         check("remote restore: nothing said of a session that kept it", "keeps" not in outcomes
               and "without" not in outcomes)
         check("remote restore: a session of Desktop is said first", said.splitlines()[:1] == ["lost\telsewhere"])
         typed = {name: "".join(entry["key"] for entry in keys_of(name)) for name in records}
         check("remote restore: /remote-control, then Enter, once in each console it could",
               all(typed[name] == "/remote-control\r" for name in ("idle", "busy", "stuck"))
-              and not any(typed[name] for name in ("typing", "elsewhere", "without", "keeps")))
+              and not any(typed[name] for name in ("typing", "elsewhere", "without", "keeps", "noconsole")))
         check("remote restore: only in an idle session",
               all(entry["status"] == "idle" for name in records for entry in keys_of(name)))
         check("remote restore: Enter a moment after the text, so it isn't read as a paste",
               all(len(keys_of(name)) == 16 and keys_of(name)[-1]["at"] - keys_of(name)[-2]["at"] >= 0.4
                   for name in ("idle", "busy", "stuck")))
         check("remote restore: nothing left", not (store / ".remote.json").exists())
+        result = remote("held", **timing)
+        check("remote held: none once those sessions have it off", result.returncode == 1 and result.stdout == "")
         for process in fixtures:
             process.kill()
             process.wait()
@@ -820,6 +828,79 @@ try:
         process.wait()
     fixtures.clear()
     rc_record.unlink(missing_ok=True)
+
+    # A session with Remote Control on that nothing can type in, one of Claude Desktop on Windows and one outside tmux
+    # elsewhere: going to a better claude.ai account waits for it while the account in use has room. A switch typed by
+    # hand, one a limit forces and one to a key go.
+    where = "outside a terminal" if WINDOWS else "outside tmux"
+
+    def plain_session(name):
+        if WINDOWS:
+            return start_session(name, entrypoint="claude-desktop")
+        sleeper = subprocess.Popen(["sleep", "300"])
+        fixtures.append(sleeper)
+        record = sessions / f"{sleeper.pid}.json"
+        put(record, {"pid": sleeper.pid, "procStart": pathlib.Path(f"/proc/{sleeper.pid}/stat").read_text()
+                     .rpartition(")")[2].split()[19], "kind": "interactive", "status": "idle", "name": name,
+                     "bridgeSessionId": "session_plain"})
+        return record
+
+    def end_plain_session(record):
+        for process in fixtures:
+            process.kill()
+            process.wait()
+        fixtures.clear()
+        record.unlink(missing_ok=True)
+
+    def stale_all():
+        for reading in (store / ".usage").glob("*.json"):
+            if not reading.name.endswith(".refused.json"):
+                stale(reading.stem)
+
+    for path in (store / ".usage").glob("*.refused.json"):
+        path.unlink()
+    (store / ".hold").unlink(missing_ok=True)
+    Server.answers.update({("/api/oauth/usage", "A-token"): (200, week(60, now() + 3 * DAY, 10)),
+                           ("/api/oauth/usage", "U-token"): (200, week(30, now() + 2 * DAY)),
+                           ("/api/oauth/usage", "U2-access"): (200, week(10, now() + DAY))})
+    stale_all()
+    run("a@example.com")
+    plain = plain_session("plain-terminal")
+    (state / "notify").unlink(missing_ok=True)
+    result = run("auto", "on")
+    check("outside a terminal: a better account waits", marked("a@example.com") and (
+        f"It stays on a@example.com while Remote Control runs {where} in plain-terminal: a switch would take it from "
+        "them.") in result.stdout.splitlines())
+    watched = out(run("watch")) + out(run("watch"))
+    check("outside a terminal: the watch waits too, quietly", marked("a@example.com") and watched == "")
+    check("outside a terminal: said once a day",
+          log("notify").count(f"It stays on a@example.com Remote Control runs {where} in plain-terminal") == 1)
+    check("outside a terminal: auto says what it waits for",
+          f"It waits to go there while Remote Control runs {where} in plain-terminal." in run("auto").stdout.splitlines())
+    end_plain_session(plain)
+    result = run("watch")
+    check("outside a terminal: once the session ends, the better account", not marked("a@example.com")
+          and re.search(r"^Switched to ", result.stdout, re.MULTILINE) is not None)
+    plain = plain_session("plain-terminal-2")
+    run("a@example.com")
+    check("outside a terminal: a switch typed by hand goes", marked("a@example.com"))
+    (store / ".hold").unlink(missing_ok=True)
+    old_switch()
+    result = hook({"session_id": "s9", "error": "rate_limit", "last_assistant_message": "You have hit your limit"})
+    check("outside a terminal: a switch the limit forces goes", result.returncode == 2 and not marked("a@example.com"))
+    # A key leaves the login, and Remote Control with it, as they are: going to one doesn't wait.
+    for path in (store / ".usage").glob("*.refused.json"):
+        path.unlink()
+    run("a@example.com")
+    (store / ".hold").unlink(missing_ok=True)
+    Server.answers.update({("/api/oauth/usage", "U-token"): (200, week(100, now() + 2 * DAY)),
+                           ("/api/oauth/usage", "U2-access"): (200, week(100, now() + DAY)),
+                           ("/key/info", "G-secret"): (200, budget(3.2, now() + 10 * DAY))})
+    stale_all()
+    result = run("watch")
+    check("outside a terminal: going to a key doesn't wait", not marked("a@example.com")
+          and re.search(r"^Switched to gw[0-9]*: ", result.stdout, re.MULTILINE) is not None)
+    end_plain_session(plain)
 
     # auto off: the hook and the watch go, the rest stays, with a hook whose program is the claude-switch.
     data = read(settings)
