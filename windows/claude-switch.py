@@ -212,6 +212,9 @@ Adding an account doesn't switch to it, unless with --switch. With automatic swi
 account ranks with the others: added without --switch, the machine goes to it at once when it comes
 first, and added with --switch, the next check moves the machine on when another account comes first.
 
+The credit an Anthropic API key has left is not readable: no API gives it out, and the Billing page
+of the Claude Console shows it.
+
 Don't use /logout on an account you want to keep: it revokes the login saved here too.
 To forget an account, remove its file in ~/.claude-accounts, or a gateway key with claude-switch key
 remove NAME.
@@ -2174,10 +2177,18 @@ def cmd_list():
         marker = "*" if file == live else " "
         print(f"{marker} {account.label:<28} {account.email:<36} {account.plan:<6} {account.ends:<11} "
               f"{LEFT_OF.get(file) or '-'}")
+    say_unreadable()
     remind_unkept_key()
     if live is not None:
         remind_overrides(live)
     remind_signins()
+
+
+def say_unreadable():
+    """Once, after the table of list or of the prompt: why an Anthropic API key has nothing in LEFT."""
+    if "not readable" in LEFT_OF.values():
+        print("The credit an Anthropic API key has left is not readable: the Billing page of the Claude Console shows "
+              "it.")
 
 
 def is_row(text, rows):
@@ -2261,6 +2272,7 @@ def cmd_prompt():
                 when = ""
             here = "active" if file == live else ""
             print(f"  {row:2d}) {shown:<56} {account.plan:<6} {when:<17} {LEFT_OF.get(file) or '-':<22} {here}")
+        say_unreadable()
         remind_unkept_key()
         if live is not None:
             remind_overrides(live)

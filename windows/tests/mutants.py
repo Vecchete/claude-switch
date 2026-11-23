@@ -301,9 +301,11 @@ MUTANTS = [
      ""),
     ("chrome-back-signs-out", "host", "chrome", '        if argv[1] == "--back" and load(account) is None:\n',
      "        if False:\n"),
-    # The key shows as it's pasted.
+    # The key shows as it's pasted, and an API key's credit is not readable.
     ("key-pasted-unseen", "switch", "keys", '            token = input(f"Gateway key for {label}: ")\n',
      '            token = __import__("getpass").getpass(f"Gateway key for {label}: ")\n'),
+    ("api-key-left-unsaid", "usage", "auto", '"not readable" if anthropic_api_key(account) else "-"', '"-"'),
+    ("api-key-note-missing", "switch", "auto", '    if "not readable" in LEFT_OF.values():\n', "    if False:\n"),
     ("temp-files-of-others-removed", "switch", "keys", "    for path in WRITING:\n",
      '    for path in (f"{CREDENTIALS}.switch", f"{CONFIG}.switch", f"{settings_target()}.switch"):\n'),
     ("temp-files-left", "switch", "keys",

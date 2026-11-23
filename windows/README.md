@@ -5,7 +5,7 @@ few things were never run there for real yet, see [Status](#status) and
 [Not verified yet](#not-verified-yet).
 
 The port follows `bin/claude-switch`, `share/chrome-host.py`, `share/desktop.py` and `share/usage.py` as of
-commit 57961fb, [gateway keys](../docs/gateway-keys.md) and [automatic switching](../docs/auto.md) included. When the Linux version changes, the port changes with it:
+commit 06f3cb0, [gateway keys](../docs/gateway-keys.md) and [automatic switching](../docs/auto.md) included. When the Linux version changes, the port changes with it:
 `windows/tests/run.sh` says on Linux whether it still behaves the same, and `windows\tests\run.ps1` checks
 on Windows what only Windows does.
 

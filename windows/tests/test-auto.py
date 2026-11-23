@@ -296,7 +296,10 @@ try:
           re.search(r" 40% until [A-Z][a-z]{2} [0-9]{2}:[0-9]{2}$", active_line) is not None)
     check("list: the week of another account", any(line.startswith("  ultra ") and " 70% until " in line for line in lines))
     check("list: a gateway budget", any(line.startswith("  gw ") and "$21.80 until " in line for line in lines))
-    check("list: nothing to read for an API key", any(line.startswith("  api ") and line.endswith(" -") for line in lines))
+    check("list: the credit of an Anthropic API key is not readable",
+          any(line.startswith("  api ") and line.endswith(" not readable") for line in lines))
+    check("list: says why, once", out(result).count("The credit an Anthropic API key has left is not readable: the "
+                                                    "Billing page of the Claude Console shows it.") == 1)
     check("list prints no token", not re.search(r"secret|-token", out(result)))
     if not WINDOWS:
         check("list: the readings are private", stat.S_IMODE((store / ".usage").stat().st_mode) == 0o700

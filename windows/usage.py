@@ -7,8 +7,8 @@ UTF-8.
 A claude.ai account is read from the endpoint Claude Code's /usage reads, with the account's own access token.
 Claude Code keeps its last reading of the account it is on in ~/.claude.json, which goes first while it is the
 newer one. A gateway key is read from the /key/info of its gateway, LiteLLM's, with the key itself. An Anthropic
-API key has nothing to read: Anthropic gives out no remaining credit, so it counts as available until a request
-says otherwise. Nothing here sends a login anywhere but to the one that issued it.
+API key has nothing to read: Anthropic gives out no remaining credit, so left says it's not readable and it counts
+as available until a request says otherwise. Nothing here sends a login anywhere but to the one that issued it.
 
 The readings are kept in ~/.claude-accounts/.usage, one file per account, and a refusal a session met beside it.
 Only you can read them.
@@ -140,6 +140,14 @@ def is_key(account):
 def key_env(account):
     env = account.get("env") if isinstance(account.get("env"), dict) else {}
     return {name: value for name, value in env.items() if name in KEY_ENV and isinstance(value, str) and value}
+
+
+def anthropic_api_key(account):
+    """True for a key that goes to the Anthropic API itself, with no gateway URL or one of anthropic.com: no API gives
+    out the credit it has left, which only the Billing page of the Claude Console shows."""
+    base = key_env(account).get("ANTHROPIC_BASE_URL")
+    host = (urllib.parse.urlsplit(base).hostname or "") if base else ""
+    return not base or host == "api.anthropic.com" or host.endswith(".anthropic.com")
 
 
 def gateway_of(account):
@@ -440,7 +448,7 @@ def left_text(file, account, now):
     if is_key(account):
         budget = reading.get("budget")
         if not budget:
-            return "-"
+            return "not readable" if anthropic_api_key(account) else "-"
         if budget.get("max") is None:
             return "no limit"
         remaining = budget["max"] - budget["spend"]
