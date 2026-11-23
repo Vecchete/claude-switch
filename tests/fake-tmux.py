@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """Stands in for tmux. It answers display-message and capture-pane for the panes of $FAKE_TMUX/panes.json, and logs
-every call in $FAKE_TMUX/log with the status the session of the pane had at that moment. An Enter, or the C-q of the
-chord bound to /remote-control, sent to a pane that reconnects sets bridgeSessionId in the record of its session, as
-/remote-control does in Claude Code.
+every call in $FAKE_TMUX/log with when it came and the status the session of the pane had at that moment. An Enter,
+or the C-q of the chord bound to /remote-control, sent to a pane that reconnects sets bridgeSessionId in the record of
+its session, as /remote-control does in Claude Code. The C-r of the chord bound to /after-switch, sent to a pane that
+listens, sets statusUpdatedAt there, as the turn /after-switch starts does.
 
 panes.json: {"%1": {"pane_pid": PID, "x": 2, "y": 10, "mode": "0", "line": "the cursor line", "record": "PATH",
-"reconnects": true}, ...}
+"reconnects": true, "listens": true}, ...}
 """
 import json
 import os
 import pathlib
 import sys
+import time
 
 state = pathlib.Path(os.environ["FAKE_TMUX"])
 panes = json.loads((state / "panes.json").read_text()) if (state / "panes.json").exists() else {}
@@ -20,7 +22,7 @@ pane = panes.get(target)
 record = pathlib.Path(pane["record"]) if pane and pane.get("record") else None
 status = json.loads(record.read_text()).get("status") if record is not None and record.exists() else None
 with open(state / "log", "a") as log:
-    log.write(json.dumps({"args": arguments, "status": status}) + "\n")
+    log.write(json.dumps({"args": arguments, "status": status, "at": time.time()}) + "\n")
 if pane is None:
     print(f"can't find pane: {target}", file=sys.stderr)
     sys.exit(1)
@@ -36,4 +38,8 @@ elif arguments[0] == "send-keys" and arguments[-1] in ("Enter", "C-q") and pane.
         and record is not None:
     session = json.loads(record.read_text())
     session["bridgeSessionId"] = "session_new"
+    record.write_text(json.dumps(session))
+elif arguments[0] == "send-keys" and arguments[-1] == "C-r" and pane.get("listens", True) and record is not None:
+    session = json.loads(record.read_text())
+    session["statusUpdatedAt"] = int(time.time() * 1000)
     record.write_text(json.dumps(session))

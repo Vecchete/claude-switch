@@ -114,6 +114,13 @@ On a Claude Code older than 2.1.330, the mobile app can show a session as workin
 turned on mid-conversation, which is what `/remote-control` after a switch does. Exit such a session and
 resume it with `claude --resume` to run the installed version.
 
+### A session sends its last reply again after a switch
+
+That's `/after-switch`, which claude-switch runs in every running session once Remote Control is back, so
+the Claude app shows the last reply. Change what it asks in `~/.claude/skills/after-switch/SKILL.md`, or
+turn it off: bind `ctrl+x ctrl+r` to `null` in the `Chat` context of `~/.claude/keybindings.json`. See
+[switch.md](switch.md#the-last-reply-again).
+
 ### The machine stays on an account while a better one has room
 
 `claude-switch auto` then says `It waits to go there while Remote Control is on in ...`. Nothing could

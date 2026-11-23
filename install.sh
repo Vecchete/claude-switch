@@ -92,8 +92,8 @@ changed() {
     return 1
 }
 
-# The service of root, and nothing else: it presses the key that runs /remote-control in a session outside tmux,
-# which only root can.
+# The service of root, and nothing else: it presses the keys that run /remote-control and /after-switch in a session
+# outside tmux, which only root can.
 if [ "$ROOT_STEP" = --root ]; then
     for index in "${!ROOT_SOURCES[@]}"; do
         place "${ROOT_SOURCES[index]}" "${ROOT_TARGETS[index]}" "${ROOT_MODES[index]}"

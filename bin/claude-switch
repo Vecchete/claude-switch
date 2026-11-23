@@ -196,9 +196,12 @@ first, and added with --switch, the next check moves the machine on when another
 A switch to another claude.ai account takes Remote Control from the sessions. claude-switch brings it
 back in each once it waits idle: it presses Ctrl+X Ctrl+Q, which it binds to /remote-control in
 ~/.claude/keybindings.json, in the tmux pane of the session, or has the claude-switch-remote service
-press it outside tmux. That service runs as root, and sudo ./install.sh --root installs it.
-claude-switch names the sessions it can't bring back. While one it can't reach has Remote Control on,
-automatic switching doesn't go to a better claude.ai account, only away from one that runs out.
+press it outside tmux. That service runs as root, and sudo ./install.sh --root installs it. Then it
+presses Ctrl+X Ctrl+R the same way in every running session, bound to /after-switch, a skill it writes
+in ~/.claude/skills: the session sends its last reply again, which the Claude app may not show, or
+carries on where it stopped. claude-switch names the sessions it can't bring back. While one it can't
+reach has Remote Control on, automatic switching doesn't go to a better claude.ai account, only away
+from one that runs out.
 
 The credit an Anthropic API key has left is not readable: no API gives it out, and the Billing page of
 the Claude Console shows it.
@@ -940,8 +943,8 @@ switch_to() {
     remote_follow
 }
 
-# Remembers the sessions with Remote Control on, before a switch to another claude.ai account takes it from them:
-# Claude Code drops it within seconds and only /remote-control brings it back.
+# Remembers the running sessions before a switch to another claude.ai account, and which have Remote Control on:
+# Claude Code drops it within seconds and only /remote-control brings it back. Each gets /after-switch then.
 remote_save() {
     [ -x "$USAGE_HELPER" ] || return 0
     "$USAGE_HELPER" remote save 9>&- 2>/dev/null || true
@@ -958,8 +961,8 @@ remote_follow() {
     setsid -f "${command[@]}" </dev/null >/dev/null 2>&1 9>&- || true
 }
 
-# Runs /remote-control in each session remote_save remembered, once it dropped Remote Control and waits idle, then
-# says where it's back and where it isn't.
+# Runs /remote-control in each session remote_save remembered with it, once it dropped Remote Control and waits idle,
+# and /after-switch in every one, then says where Remote Control is back and where it isn't.
 cmd_remote() {
     local outcome name back=0 lost=() names
     [ $# -eq 0 ] || die "Usage: claude-switch remote"

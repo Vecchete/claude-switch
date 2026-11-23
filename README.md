@@ -125,8 +125,9 @@ Nothing more to do. When Claude Desktop is installed, it follows the switch.
 ### Remote Control outside tmux
 
 After a switch to another claude.ai account, claude-switch brings Remote Control back in the sessions that
-run in tmux. For those in another terminal, over SSH or in the terminal of VS Code, install the
-claude-switch-remote service, which runs as root to press the key there:
+run in tmux, and asks each of them for its last reply again, which the Claude app may miss. For those in
+another terminal, over SSH or in the terminal of VS Code, install the claude-switch-remote service, which
+runs as root to press the keys there:
 
 ```bash
 sudo ./install.sh --root
@@ -310,6 +311,9 @@ and says how to report a problem.
   the others. While one it can't reach has Remote Control on, automatic switching doesn't go to a better
   claude.ai account until the one in use runs out. A phone or another browser shows the sessions once
   it's signed in to the new account.
+- After that switch, every running session it can reach gets `/after-switch`, which asks for its last
+  reply again: one turn in each, on the new account. [docs/switch.md](docs/switch.md#the-last-reply-again)
+  says how to change its words or turn it off.
 - What a subscription has left comes from an endpoint Anthropic doesn't document. When it changes, `list`
   shows `-` and automatic switching moves on only when a session meets a limit.
 - Automatic switching wakes a session through a `StopFailure` hook with `asyncRewake`, checked with Claude
@@ -345,8 +349,9 @@ rm -rf ~/.local/share/claude-switch
 sudo ./install.sh --remove-root   # from the checkout, when the service of root is installed
 ```
 
-Then remove Claude account switch in `chrome://extensions`, and the `ctrl+x ctrl+q` binding from
-`~/.claude/keybindings.json` if you like. Claude Code stays signed in to the active account.
+Then remove Claude account switch in `chrome://extensions`, and if you like the `ctrl+x ctrl+q` and
+`ctrl+x ctrl+r` bindings from `~/.claude/keybindings.json` and the skill `~/.claude/skills/after-switch`.
+Claude Code stays signed in to the active account.
 `~/.claude-accounts` still holds the logins of every account: delete it once you don't need them anymore.
 
 ## Documentation

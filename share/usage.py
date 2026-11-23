@@ -27,13 +27,17 @@ resets before one that doesn't, credit nobody can read last.
                                           authentication_failed. Prints why, as a phrase
     usage.py why FILE                     why FILE can't be used now, as a phrase, exit 1 when it can
     usage.py first FILE...                the account that has room again first, and when
-    usage.py remote save                  remember the sessions with Remote Control on, before a switch to another
-                                          claude.ai account takes it from them, and bind Ctrl+X Ctrl+Q to
-                                          /remote-control in ~/.claude/keybindings.json
-    usage.py remote restore               run /remote-control in each of them once it dropped Remote Control and
-                                          waits idle: press Ctrl+X Ctrl+Q at its prompt in its tmux pane, or have the
-                                          claude-switch-remote service press it outside tmux. Prints back or lost, a
-                                          tab and the name of each session, exit 1 when another restore runs
+    usage.py remote save                  remember the running sessions before a switch to another claude.ai
+                                          account, and which have Remote Control on, which the switch takes from
+                                          them. Bind Ctrl+X Ctrl+Q to /remote-control and Ctrl+X Ctrl+R to
+                                          /after-switch in ~/.claude/keybindings.json, and write /after-switch, a
+                                          skill of Claude Code, when it isn't there
+    usage.py remote restore               run /remote-control in each session that had it once it dropped Remote
+                                          Control and waits idle: press Ctrl+X Ctrl+Q at its prompt in its tmux pane,
+                                          or have the claude-switch-remote service press it outside tmux. Then press
+                                          Ctrl+X Ctrl+R the same way in every session, so it shows its last reply
+                                          again. Prints back, lost or told, a tab and the name of each session, exit
+                                          1 when another restore runs
     usage.py remote held                  the sessions with Remote Control on that restore can't reach, outside tmux
                                           without the service, one name a line, exit 1 when there are none
 """
@@ -81,13 +85,33 @@ REMOTE_DROP = float(os.environ.get("CLAUDE_SWITCH_REMOTE_DROP") or 60)
 REMOTE_BACK = float(os.environ.get("CLAUDE_SWITCH_REMOTE_BACK") or 30)
 REMOTE_WAIT = float(os.environ.get("CLAUDE_SWITCH_REMOTE_WAIT") or 900)
 REMOTE_TRIES = 3
+# How long Remote Control is back before /after-switch goes: the new connection uploads the conversation first.
+REMOTE_SETTLE = float(os.environ.get("CLAUDE_SWITCH_REMOTE_SETTLE") or 5)
 # The prompt of Claude Code, where the cursor waits when nothing is typed.
 PROMPTS = (chr(0x276F), ">")
-# The key that runs /remote-control in the Chat context of Claude Code, whatever is typed at the prompt, and does
-# nothing elsewhere. Claude Code reads its keybindings again when the file changes.
+# The keys that run /remote-control and /after-switch in the Chat context of Claude Code, whatever is typed at the
+# prompt, and do nothing elsewhere. Claude Code reads its keybindings again when the file changes.
 KEYBINDINGS = HOME / ".claude" / "keybindings.json"
 CHORD = "ctrl+x ctrl+q"
 COMMAND = "command:remote-control"
+TELL = "ctrl+x ctrl+r"
+BINDINGS = {CHORD: COMMAND, TELL: "command:after-switch"}
+# What every running session gets once a switch to another claude.ai account is done, a few seconds after Remote
+# Control is back where it was on: a skill of Claude Code, which runs it as a prompt typed by the user. Claude Code
+# reads a new skill in the sessions already open too. One the user changed stays as it is.
+MESSAGE = HOME / ".claude" / "skills" / "after-switch" / "SKILL.md"
+MESSAGE_TEXT = """---
+description: What claude-switch sends to each running session once it moved this machine to another Claude account
+disable-model-invocation: true
+---
+
+claude-switch moved this machine to another Claude account. If Remote Control was on here, it reconnected under
+that account, so the Claude app may be missing your last reply.
+
+If your last turn ended with a reply, send that reply again in full, as it was, without running anything. If it
+stopped before you could reply, because of an error or a usage limit, carry on from where it stopped. If I
+interrupted you, don't carry on: just say where you stopped. If there is nothing to repeat yet, say so in one line.
+"""
 # The claude-switch-remote service, which runs as root: only root can press a key in a session outside tmux.
 REMOTE_SOCKET = os.environ.get("CLAUDE_SWITCH_REMOTE_SOCKET") or "/run/claude-switch-remote.sock"
 
@@ -665,13 +689,17 @@ def in_its_pane(session):
         return False
 
 
-def with_remote_control():
-    """The records of the running interactive sessions with Remote Control on."""
+def running_sessions():
+    """The records of the running interactive sessions."""
     for path in SESSIONS.glob("*.json"):
         session = live_session(path)
-        if session is not None and session.get("kind") == "interactive" \
-                and isinstance(session.get("bridgeSessionId"), str):
+        if session is not None and session.get("kind") == "interactive":
             yield session
+
+
+def with_remote_control():
+    """The records of the running interactive sessions with Remote Control on."""
+    return [session for session in running_sessions() if isinstance(session.get("bridgeSessionId"), str)]
 
 
 def type_remote_control(pane):
@@ -682,50 +710,57 @@ def type_remote_control(pane):
     return tmux("send-keys", "-t", pane, "Enter") is not None
 
 
-def press_chord(pane):
+def press_chord(pane, key="C-q"):
+    """Presses Ctrl+X, then KEY, in PANE."""
     if tmux("send-keys", "-t", pane, "C-x") is None:
         return False
     # Two keys that arrive together read as a paste. Claude Code waits 3 seconds for the second key of a chord.
     time.sleep(0.3)
-    return tmux("send-keys", "-t", pane, "C-q") is not None
+    return tmux("send-keys", "-t", pane, key) is not None
 
 
 def spelled(key):
     return " ".join(str(key).lower().replace("control+", "ctrl+").split())
 
 
-def remote_binding(write=False):
-    """Whether ~/.claude/keybindings.json binds CHORD to /remote-control: bound when it does, free when it doesn't yet
-    and can, None when it can't, as the file isn't one Claude Code reads or a binding of the user's takes the chord,
-    Ctrl+X or Ctrl+Q. With WRITE a free binding is written, and then bound."""
+def key_bindings(write=False):
+    """How ~/.claude/keybindings.json stands with each key of BINDINGS: bound when it runs its command, free when it
+    doesn't yet and can, None when it can't, as a binding of the user's takes the key, a longer one that starts with
+    it, Ctrl+X or its second key. None for both when the file isn't one Claude Code reads. With WRITE the free ones
+    are written, and then bound."""
     try:
         data = json.loads(KEYBINDINGS.read_text())
     except FileNotFoundError:
         data = {"$schema": "https://www.schemastore.org/claude-code-keybindings.json",
                 "$docs": "https://code.claude.com/docs/en/keybindings", "bindings": []}
     except (OSError, ValueError):
-        return None
+        return dict.fromkeys(BINDINGS)
     blocks = data.get("bindings") if isinstance(data, dict) else None
     if not isinstance(blocks, list) or not all(isinstance(block, dict) and isinstance(block.get("bindings"), dict)
                                                for block in blocks):
-        return None
-    bound = False
+        return dict.fromkeys(BINDINGS)
+    states = dict.fromkeys(BINDINGS, "free")
+    taken = set()
     for block in blocks:
         for key, action in block["bindings"].items():
             key = spelled(key)
-            if key == CHORD and action == COMMAND:
-                bound = True
-            elif key == CHORD or key.startswith(f"{CHORD} ") or (key in ("ctrl+x", "ctrl+q") and action is not None):
-                return None
-    if bound:
-        return "bound"
-    if not write:
-        return "free"
+            for chord, command in BINDINGS.items():
+                if key == chord and action == command:
+                    states[chord] = "bound"
+                elif key == chord or key.startswith(f"{chord} ") \
+                        or (key in ("ctrl+x", chord.split()[1]) and action is not None):
+                    taken.add(chord)
+    for chord in taken:
+        states[chord] = None
+    free = [chord for chord, state in states.items() if state == "free"]
+    if not write or not free:
+        return states
     chat = next((block for block in blocks if block.get("context") == "Chat"), None)
     if chat is None:
         chat = {"context": "Chat", "bindings": {}}
         blocks.append(chat)
-    chat["bindings"][CHORD] = COMMAND
+    for chord in free:
+        chat["bindings"][chord] = BINDINGS[chord]
     temporary = KEYBINDINGS.with_name(f"{KEYBINDINGS.name}.{os.getpid()}.tmp")
     try:
         mode = stat.S_IMODE(KEYBINDINGS.stat().st_mode) if KEYBINDINGS.exists() else 0o644
@@ -735,8 +770,24 @@ def remote_binding(write=False):
         os.replace(temporary, KEYBINDINGS)
     except OSError:
         temporary.unlink(missing_ok=True)
-        return None
-    return "bound"
+        return {chord: None if chord in free else state for chord, state in states.items()}
+    return {chord: "bound" if chord in free else state for chord, state in states.items()}
+
+
+def write_message():
+    """Writes /after-switch when it isn't there, readable as Claude Code writes its files. One the user changed stays
+    as it is."""
+    temporary = MESSAGE.with_name(f"{MESSAGE.name}.{os.getpid()}.tmp")
+    try:
+        if MESSAGE.exists():
+            return
+        MESSAGE.parent.mkdir(parents=True, exist_ok=True)
+        with open(os.open(temporary, os.O_WRONLY | os.O_TRUNC | os.O_CREAT, 0o600), "w") as handle:
+            handle.write(MESSAGE_TEXT)
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, MESSAGE)
+    except OSError:
+        temporary.unlink(missing_ok=True)
 
 
 def own_terminal(pid):
@@ -755,20 +806,22 @@ def root_service():
         return False
 
 
-def through_root(session, ready=("bound",)):
-    """True when the claude-switch-remote service can press the key in SESSION, outside tmux: the key is bound, or
-    READY says free will do, and the session has a terminal of its own."""
-    return remote_binding() in ready and root_service() and own_terminal(session.get("pid"))
+def through_root(session, ready=("bound",), chord=CHORD):
+    """True when the claude-switch-remote service can press CHORD in SESSION, outside tmux: the key is bound, or READY
+    says free will do, and the session has a terminal of its own."""
+    return key_bindings()[chord] in ready and root_service() and own_terminal(session.get("pid"))
 
 
-def press_from_root(pid, start):
-    """Has the claude-switch-remote service press the key in the session PID that started at START. True once it
+def press_from_root(pid, start, chord=CHORD):
+    """Has the claude-switch-remote service press CHORD in the session PID that started at START. True once it
     answered, pressed or refused, which counts as a try: what it refuses now, it refuses a second later."""
+    # Ctrl+Q goes without its letter, the one request a service installed before Ctrl+R reads.
+    second = "" if chord == CHORD else f" {chord[-1]}"
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
             connection.settimeout(10)
             connection.connect(REMOTE_SOCKET)
-            connection.sendall(f"{int(pid)} {int(start)}\n".encode())
+            connection.sendall(f"{int(pid)} {int(start)}{second}\n".encode())
             answer = connection.makefile("rb").readline()
     except (OSError, TypeError, ValueError):
         return False
@@ -782,11 +835,20 @@ def press(entry, tries):
     pane = entry.get("pane")
     if not pane:
         return press_from_root(entry.get("pid"), entry.get("start"))
-    bound = remote_binding() == "bound"
+    bound = key_bindings()[CHORD] == "bound"
     where = prompt_of(pane, entry.get("pid"))
     if where == "empty" and (tries or not bound):
         return type_remote_control(pane)
     return bound and where is not None and press_chord(pane)
+
+
+def tell(entry):
+    """Runs /after-switch in the session of ENTRY: presses its key at the prompt of its tmux pane, text typed or not,
+    or has the root service press it outside tmux. True when it pressed."""
+    pane = entry.get("pane")
+    if not pane:
+        return press_from_root(entry.get("pid"), entry.get("start"), TELL)
+    return prompt_of(pane, entry.get("pid")) is not None and press_chord(pane, "C-r")
 
 
 def remote_lock(name):
@@ -795,20 +857,25 @@ def remote_lock(name):
 
 
 def command_remote_save(arguments):
-    """Remembers the sessions with Remote Control on, before a switch takes it from them: each with its tmux pane, or
-    none when it runs elsewhere. A session still waiting from a switch before stays. Binds the key that brings it
-    back, which Claude Code reads before the sessions are idle again."""
+    """Remembers the running sessions before a switch: each with its tmux pane, or none when it runs elsewhere, and
+    whether it has Remote Control on, which the switch takes from it. A session still waiting from a switch before
+    stays as it was, unless it has Remote Control on again. Binds the keys that bring Remote Control back and run
+    /after-switch, and writes /after-switch when it isn't there: Claude Code reads both before the sessions are idle
+    again."""
     now = now_ms()
     with remote_lock(".remote.lock") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         kept = {entry.get("pid"): entry for entry in (load(REMOTE) or {}).get("sessions", []) if isinstance(entry, dict)}
-        for session in with_remote_control():
-            kept[session.get("pid")] = {"pid": session.get("pid"), "start": session.get("procStart"),
-                                        "pane": pane_of(session), "name": name_of(session), "since": now,
-                                        "off": False, "typed": None, "tries": 0}
+        for session in running_sessions():
+            remote = isinstance(session.get("bridgeSessionId"), str)
+            waiting = kept.get(session.get("pid"))
+            if remote or waiting is None or waiting.get("start") != session.get("procStart"):
+                kept[session.get("pid")] = {"pid": session.get("pid"), "start": session.get("procStart"),
+                                            "pane": pane_of(session), "name": name_of(session), "since": now,
+                                            "remote": remote, "off": False, "typed": None, "tries": 0}
         write_private(REMOTE, {"sessions": list(kept.values())})
-    if kept:
-        remote_binding(write=True)
+    if kept and key_bindings(write=True)[TELL] == "bound":
+        write_message()
     return 0
 
 
@@ -823,10 +890,23 @@ def command_remote_held(arguments):
 
 
 def remote_step(entry, now):
-    """Moves one remembered session on. Returns back, lost or gone once it's done with, None while it waits."""
+    """Moves one remembered session on: Remote Control first where the switch took it, then /after-switch. Returns
+    back, lost, told or gone once it's done with, None while it waits."""
     session = live_session(SESSIONS / f"{entry.get('pid')}.json")
     if session is None or session.get("procStart") != entry.get("start"):
         return "gone"
+    if entry.get("remote", True) and entry.get("back") is None:
+        outcome = remote_control_step(entry, session, now)
+        if outcome != "back":
+            return outcome
+        entry["back"] = now
+        return None
+    return tell_step(entry, session, now)
+
+
+def remote_control_step(entry, session, now):
+    """Brings Remote Control back in the session of ENTRY. Returns back, lost or gone once it's done with, None while
+    it waits."""
     connected = isinstance(session.get("bridgeSessionId"), str)
     if not entry.get("off"):
         # Until it dropped Remote Control it's on the account it had: a session that keeps it needs nothing.
@@ -848,8 +928,42 @@ def remote_step(entry, now):
     return None
 
 
+def tell_step(entry, session, now):
+    """Runs /after-switch in the session of ENTRY once it waits idle, a few seconds after Remote Control came back, or
+    after the switch where it wasn't on. Nothing goes to a session used meanwhile: what it does shows as it happens.
+    Returns back for a session that had Remote Control, told or gone for another, once it's done with, None while it
+    waits."""
+    done = "back" if entry.get("back") is not None else "gone"
+    told = entry.get("told")
+    if told is not None and ((session.get("statusUpdatedAt") or 0) >= told or session.get("status") != "idle"):
+        # It took: the session started a turn since.
+        return "back" if done == "back" else "told"
+    if told is None and session.get("status") != "idle":
+        return done
+    if key_bindings()[TELL] != "bound" or not MESSAGE.exists():
+        return done
+    # Outside tmux only the root service can press the key, in a session on a terminal of its own.
+    if not entry.get("pane") and not (root_service() and own_terminal(session.get("pid"))):
+        return done
+    ready = entry["back"] if entry.get("back") is not None else entry.get("since", now)
+    tells = entry.get("tells") or 0
+    if told is not None and now - told <= REMOTE_BACK * 1000:
+        return None
+    if tells >= REMOTE_TRIES or now - ready > REMOTE_WAIT * 1000:
+        return done
+    if now - ready < REMOTE_SETTLE * 1000:
+        return None
+    # From before the key: the turn it starts can begin before the press is over.
+    pressed = now_ms()
+    if tell(entry):
+        entry["told"] = pressed
+        entry["tells"] = tells + 1
+    return None
+
+
 def command_remote_restore(arguments):
-    """Brings Remote Control back in the remembered sessions, one step each second until none waits."""
+    """Brings Remote Control back in the remembered sessions and runs /after-switch there, one step each second until
+    none waits."""
     with remote_lock(".remote.restore.lock") as running:
         try:
             fcntl.flock(running, fcntl.LOCK_EX | fcntl.LOCK_NB)

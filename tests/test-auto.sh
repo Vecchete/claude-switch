@@ -401,11 +401,11 @@ close_session
 
 # Remote Control after a switch to another claude.ai account: claude-switch remote presses Ctrl+X Ctrl+Q, which it binds
 # to /remote-control, in the tmux pane of the session that had it, once Claude Code dropped it there and the session
-# waits idle at its prompt. No root service here.
+# waits idle at its prompt, then Ctrl+X Ctrl+R, which it binds to /after-switch. No root service here.
 cp "$HERE/fake-tmux.py" "$T/bin/tmux"
 chmod +x "$T/bin/tmux"
 export FAKE_TMUX=$T/tmux CLAUDE_SWITCH_REMOTE_DROP=10 CLAUDE_SWITCH_REMOTE_BACK=10 CLAUDE_SWITCH_REMOTE_WAIT=20 \
-    CLAUDE_SWITCH_REMOTE_SOCKET=$T/remote.sock
+    CLAUDE_SWITCH_REMOTE_SETTLE=1 CLAUDE_SWITCH_REMOTE_SOCKET=$T/remote.sock
 mkdir -p "$FAKE_TMUX"
 sleep 300 &
 RC_PID=$!
@@ -423,11 +423,15 @@ check "remote: the store isn't held while it waits" 'timeout 5 "$SCRIPT" list'
 # Claude Code drops Remote Control within seconds of the switch.
 jq '.bridgeSessionId = null' "$RC_RECORD" > "$T/r" && mv "$T/r" "$RC_RECORD"
 for _ in $(seq 100); do grep -q "Remote Control is back" "$T/notify" 2>/dev/null && break; sleep 0.2; done
-check "remote: the key bound to /remote-control" \
-    '[ "$(jq -r ".bindings[] | select(.context == \"Chat\") | .bindings[\"ctrl+x ctrl+q\"]" "$HOME/.claude/keybindings.json")" = command:remote-control ]'
-check "remote: Ctrl+X, then Ctrl+Q, in its pane" \
-    '[ "$(jq -c "select(.args[0] == \"send-keys\") | .args" "$FAKE_TMUX/log" | tr "\n" " ")" \
-    = "[\"send-keys\",\"-t\",\"%1\",\"C-x\"] [\"send-keys\",\"-t\",\"%1\",\"C-q\"] " ]'
+# What keybindings.json binds KEY to in the Chat context.
+bound_to() { jq -r ".bindings[] | select(.context == \"Chat\") | .bindings[\"$1\"]" "$HOME/.claude/keybindings.json"; }
+check "remote: the key bound to /remote-control" '[ "$(bound_to "ctrl+x ctrl+q")" = command:remote-control ]'
+check "remote: the key bound to /after-switch, and /after-switch written" \
+    '[ "$(bound_to "ctrl+x ctrl+r")" = command:after-switch ] \
+    && grep -q "^disable-model-invocation: true\$" "$HOME/.claude/skills/after-switch/SKILL.md"'
+check "remote: Ctrl+X, then Ctrl+Q, in its pane, then Ctrl+X Ctrl+R" \
+    '[ "$(jq -r "select(.args[0] == \"send-keys\") | .args[2:] | join(\" \")" "$FAKE_TMUX/log" | tr "\n" " ")" \
+    = "%1 C-x %1 C-q %1 C-x %1 C-r " ]'
 check "remote: says it's back, and under which account" 'grep -q "Remote Control is back In 1 session, under ultra: " "$T/notify"'
 "$SCRIPT" rename ultra remote > "$T/out" 2>&1; rc=$?
 check "remote is no name" '[ "$rc" -ne 0 ] && grep -q "remote is a command of this script" "$T/out"'

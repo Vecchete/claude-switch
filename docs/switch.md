@@ -61,12 +61,13 @@ account without a restart. Remote Control is the exception. Each session registe
 CLI is on, so Claude Code drops it within seconds of a switch to another claude.ai account, and only
 `/remote-control` registers the session with the new account, carrying its conversation over.
 
-claude-switch runs it again for you. Before the switch it notes the sessions that have Remote Control on,
-and binds `Ctrl+X Ctrl+Q` to `/remote-control` in `~/.claude/keybindings.json`, beside your own bindings.
-Claude Code reads that file again by itself, in the sessions already open too. The key runs the command
-at the prompt and leaves what you typed there as it is, and it does nothing in a dialog. After the switch,
-`claude-switch remote` runs in the background and presses it in each of those sessions, once Claude Code
-dropped Remote Control there and the session waits idle:
+claude-switch runs it again for you. Before the switch it notes the running sessions, and which have
+Remote Control on. It binds `Ctrl+X Ctrl+Q` to `/remote-control` in `~/.claude/keybindings.json`, beside
+your own bindings, and `Ctrl+X Ctrl+R` to [`/after-switch`](#the-last-reply-again). Claude Code reads that
+file again by itself, in the sessions already open too. A key runs its command at the prompt and leaves
+what you typed there as it is, and it does nothing in a dialog. After the switch, `claude-switch remote`
+runs in the background and presses `Ctrl+X Ctrl+Q` in each session that had Remote Control, once Claude
+Code dropped it there and the session waits idle:
 
 - In tmux, it presses the key in the pane of the session, at its prompt. It never presses in a busy
   session, a pane scrolled back in copy mode, or a pane that runs another program.
@@ -79,9 +80,10 @@ couldn't bring back, so you can run `/remote-control` in them yourself: one wher
 that stayed busy for 15 minutes, and one nothing can reach, a session of Desktop or of an IDE, or one
 outside tmux without the service.
 
-When a binding of yours takes `Ctrl+X`, `Ctrl+Q` or that chord, or `keybindings.json` is a file Claude
-Code can't read, claude-switch leaves the file alone. It then types `/remote-control` in tmux at an empty
-prompt only, and nothing reaches the sessions outside tmux.
+When a binding of yours takes `Ctrl+X`, `Ctrl+Q` or `Ctrl+X Ctrl+Q`, claude-switch doesn't bind that key.
+It then types `/remote-control` in tmux at an empty prompt only, and nothing reaches the sessions outside
+tmux. The same goes for `Ctrl+R` and `Ctrl+X Ctrl+R`, and without its key `/after-switch` goes nowhere. A
+`keybindings.json` Claude Code can't read stays as it is, with neither key.
 
 While a session nothing can reach has Remote Control on, [automatic switching](auto.md) doesn't go to a
 better claude.ai account as long as the account in use has room. It stays, says so in a notification once
@@ -91,6 +93,30 @@ switch you type, one a limit forces, and one to a key still go.
 A phone or another computer shows the sessions once it's signed in to the account the machine moved to:
 claude.ai in Chrome here follows the switch, see [chrome.md](chrome.md), but the Claude app and other
 browsers keep the account they're on.
+
+### The last reply again
+
+The Claude app can miss the last reply of a session once Remote Control is back, so claude-switch asks
+every running session for it. A few seconds after Remote Control is back, or right after the switch in a
+session that didn't have it, it presses `Ctrl+X Ctrl+R` the same way as the other key. That runs
+`/after-switch`, a skill it writes in `~/.claude/skills/after-switch/SKILL.md`, as if you typed it:
+
+> claude-switch moved this machine to another Claude account. If Remote Control was on here, it
+> reconnected under that account, so the Claude app may be missing your last reply.
+>
+> If your last turn ended with a reply, send that reply again in full, as it was, without running
+> anything. If it stopped before you could reply, because of an error or a usage limit, carry on from
+> where it stopped. If I interrupted you, don't carry on: just say where you stopped. If there is nothing
+> to repeat yet, say so in one line.
+
+Each session gets it once, and it takes a turn there, on the account the machine moved to. It goes
+nowhere Remote Control didn't come back, and not to a session that started a turn meanwhile, from the app
+or at its prompt, since what that session does shows as it happens. When the key didn't take, it tries
+again a little later, 3 times in all. A session nothing can reach, of Desktop or of an IDE, or outside
+tmux without the service, doesn't get it.
+
+Change the words of that file as you like: claude-switch writes it only when it isn't there. To turn
+`/after-switch` off, bind `ctrl+x ctrl+r` to `null` in the `Chat` context of `keybindings.json`.
 
 ### The claude-switch-remote service
 
@@ -105,9 +131,11 @@ sudo ./install.sh --remove-root   # take it out
 ```
 
 It's a socket of systemd, `/run/claude-switch-remote.sock`, which starts the service for each request.
-Any user may ask, and only for a session of their own. It presses `Ctrl+X` then `Ctrl+Q`, never anything
-else, and only in a Claude Code session of the user who asks, in the foreground of a terminal of that
-user that waits for keys, and only when no program of another user runs on that terminal.
+Any user may ask, and only for a session of their own. It presses `Ctrl+X` then `Ctrl+Q`, or `Ctrl+X` then
+`Ctrl+R`, never anything else, and only in a Claude Code session of the user who asks, in the foreground
+of a terminal of that user that waits for keys, and only when no program of another user runs on that
+terminal. A service installed before `/after-switch` presses `Ctrl+Q` only: update it with the same
+`sudo ./install.sh --root`.
 [SECURITY.md](../SECURITY.md) lists every check. What it pressed and what it refused goes to the journal:
 
 ```bash

@@ -40,17 +40,20 @@ Only the latest commit of `main` gets fixes. There are no releases yet.
 - After a switch to another claude.ai account, it brings Remote Control back in each session that had it,
   while the session waits idle, 3 times at most. It presses `Ctrl+X Ctrl+Q`, which it binds to
   `/remote-control` in `~/.claude/keybindings.json`, or types `/remote-control` at an empty prompt when
-  that key can't be bound, and nothing else. In tmux it does so only at the prompt of the session's own
-  pane, out of copy mode.
-- Outside tmux, the optional claude-switch-remote service presses that key. It runs as root, since only
+  that key can't be bound, and nothing else. Then it presses `Ctrl+X Ctrl+R` the same way in every
+  running session, once and 3 times at most, never in one that started a turn meanwhile. That key
+  runs `/after-switch`, a skill it writes in `~/.claude/skills/after-switch/SKILL.md` when it isn't there,
+  and one Claude never runs on its own. In tmux it does so only at the prompt of the session's own pane,
+  out of copy mode.
+- Outside tmux, the optional claude-switch-remote service presses those keys. It runs as root, since only
   root can put a key in a terminal that isn't one's own, and anyone on the machine can ask it. It presses
-  `Ctrl+X` then `Ctrl+Q` and nothing else, only when all of these hold:
+  `Ctrl+X` then `Ctrl+Q`, or `Ctrl+X` then `Ctrl+R`, and nothing else, only when all of these hold:
   - the session runs as the user who asks, read from the socket, is called `claude`, and started when
     the request says, so a pid used again is never taken for it,
   - its controlling terminal is a pseudo-terminal of that user, where it is the foreground, in raw mode,
   - every process on that terminal runs as that user, so no program of another user, a root shell the
     session runs under for one, ever reads the keys,
-  - it didn't press in that session in the last 20 seconds.
+  - it didn't press the same keys in that session in the last 20 seconds.
 
   systemd runs it with no capability but `CAP_SYS_ADMIN` and `CAP_DAC_OVERRIDE`, no network, no home
   folders, a read-only system and pseudo-terminals as its only devices. Every press and every refusal goes

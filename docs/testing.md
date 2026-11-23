@@ -127,6 +127,10 @@ real services and apps:
   7.0 with `dev.tty.legacy_tiocsti` at 0, the two keys do the same. The claude-switch-remote service,
   installed under systemd 255 on Ubuntu 24.04 with its sandbox, brought Remote Control back that way in a
   session that ran outside tmux for Claude Code, and refused a shell and PID 1.
+- Claude Code 2.1.327 and 2.1.330: `ctrl+x ctrl+r` bound to `command:<name>` runs a skill of
+  `~/.claude/skills` with `disable-model-invocation: true`, written after the session started, as a prompt
+  typed at the prompt, and leaves the text at the prompt as it was. The record of the session in
+  `~/.claude/sessions` shows the turn in `status` and `statusUpdatedAt` within a second.
 - claude.ai: a made-up session gets a 403 JSON answer with `account_session_invalid` from `/api/account`,
   saved sessions swap without a sign-in, and a page that sends half a swapped session gets it revoked.
 - claude.ai: the first Remote Control session of an account in Chrome or Desktop asks for a fresh sign-in,

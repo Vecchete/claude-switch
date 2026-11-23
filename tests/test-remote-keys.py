@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Tests of remote-keys.py, the service of root that presses Ctrl+X Ctrl+Q in a Claude Code session outside tmux. A
-stand-in Claude Code runs on a pseudo-terminal of its own and logs each read of its terminal. Every request goes over
-a socket, handed to the service as systemd hands it over. As any user every check runs up to the press, which the
-kernel refuses without CAP_SYS_ADMIN. As root with CAP_SYS_ADMIN the keys reach the stand-in, and the checks that need
-a second user run too, which docker run --user root --cap-add SYS_ADMIN gives.
+"""Tests of remote-keys.py, the service of root that presses Ctrl+X Ctrl+Q or Ctrl+X Ctrl+R in a Claude Code session
+outside tmux. A stand-in Claude Code runs on a pseudo-terminal of its own and logs each read of its terminal. Every
+request goes over a socket, handed to the service as systemd hands it over. As any user every check runs up to the
+press, which the kernel refuses without CAP_SYS_ADMIN. As root with CAP_SYS_ADMIN the keys reach the stand-in, and the
+checks that need a second user run too, which docker run --user root --cap-add SYS_ADMIN gives.
 Usage: test-remote-keys.py REMOTE_KEYS_PY"""
 import fcntl
 import os
@@ -212,6 +212,8 @@ def run(bench):
     answer, said = bench.ask("not a request\n")
     check("a request it can't read: refused", answer == "refused request")
     check("the journal says what it refused", "refused (request)" in said)
+    answer, _ = bench.ask(f"{os.getpid()} 1 x\n")
+    check("a key it doesn't press: refused", answer == "refused request")
 
     pid, start, log = bench.session()
     answer, _ = bench.ask(f"{pid} 1\n")
@@ -254,6 +256,21 @@ def run(bench):
         check("every check passes up to the press, which the kernel refuses", answer == "refused kernel")
     answer, _ = bench.ask(f"{pid} {start}\n")
     check("the same session again at once: refused", answer == "refused again")
+    answer, _ = bench.ask(f"{pid} {start} q\n")
+    check("Ctrl+Q spelled out, the same keys again at once: refused", answer == "refused again")
+    answer, said = bench.ask(f"{pid} {start} r\n")
+    if CAPABLE:
+        check("Ctrl+R right after Ctrl+Q in the same session: pressed", answer == "pressed")
+        for _ in range(40):
+            if len(keys(log)) >= 4:
+                break
+            time.sleep(0.05)
+        check("then Ctrl+X, then Ctrl+R, each on its own, and nothing else", keys(log) == ["18", "11", "18", "12"])
+        check("the journal says which keys it pressed", f"pressed Ctrl+X Ctrl+R for uid {USER}, pid {pid}" in said)
+    else:
+        check("Ctrl+R: every check passes up to the press, which the kernel refuses", answer == "refused kernel")
+    answer, _ = bench.ask(f"{pid} {start} r\n")
+    check("Ctrl+R again at once: refused", answer == "refused again")
 
     if not ROOT:
         print("Skipped as another user than root: a session of another user, a terminal of another user, a root "

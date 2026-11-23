@@ -1,18 +1,20 @@
 #!/usr/bin/env -S python3 -I -S
-"""Presses Ctrl+X then Ctrl+Q in the terminal of a Claude Code session, for the user the session belongs to.
-claude-switch binds those keys to /remote-control, and has them pressed once a switch to another claude.ai account
-took Remote Control from a session outside tmux. Only CAP_SYS_ADMIN can put keys in a terminal that isn't one's own
-(TIOCSTI), so this runs as root: systemd starts it for each connection to the claude-switch-remote socket, with the
-connection as its standard input and output.
+"""Presses Ctrl+X then Ctrl+Q, or Ctrl+X then Ctrl+R, in the terminal of a Claude Code session, for the user the
+session belongs to. claude-switch binds Ctrl+X Ctrl+Q to /remote-control and Ctrl+X Ctrl+R to /after-switch, and has
+them pressed in a session outside tmux once it switched to another claude.ai account: the first where the switch took
+Remote Control, then the second. Only CAP_SYS_ADMIN can put keys in a terminal that isn't one's own (TIOCSTI), so
+this runs as root: systemd starts it for each connection to the claude-switch-remote socket, with the connection as
+its standard input and output.
 
-The request is one line, PID and START: the pid of the session and its start time, field 22 of /proc/PID/stat. The
-answer is one line: pressed, or refused and why. It presses those two keys and nothing else, and only when
+The request is one line, PID, START and the letter of the second key: the pid of the session, its start time, field
+22 of /proc/PID/stat, and r for Ctrl+R, nothing or q for Ctrl+Q. The answer is one line: pressed, or refused and
+why. It presses those two keys and nothing else, and only when
 - the process runs as the user who asks, read from the socket, is called claude and started at START,
 - its controlling terminal is a pseudo-terminal of that user, where it is the foreground,
 - the terminal is in raw mode, as Claude Code keeps it while it reads keys,
 - every process on that terminal runs as that user, so no program of another user, a root shell the session runs
   under for one, ever reads a key it presses,
-- it didn't press in that session in the last 20 seconds.
+- it didn't press the same keys in that session in the last 20 seconds.
 """
 import fcntl
 import os
@@ -24,14 +26,15 @@ import sys
 import termios
 import time
 
-KEYS = (b"\x18", b"\x11")
+FIRST = b"\x18"
+SECOND = {"q": b"\x11", "r": b"\x12"}
 # Keys that arrive together read as a paste. Claude Code waits 3 seconds for the second key of a chord.
 GAP = 0.3
 AGAIN = 20
 # The majors of Unix98 pseudo-terminals, /dev/pts/N.
 PTS = range(136, 144)
 STATE = os.environ.get("RUNTIME_DIRECTORY") or "/run/claude-switch-remote"
-REQUEST = re.compile(rb"([0-9]{1,10}) ([0-9]{1,20})\n?")
+REQUEST = re.compile(rb"([0-9]{1,10}) ([0-9]{1,20})(?: ([qr]))?\n?")
 
 
 class Refused(Exception):
@@ -126,10 +129,10 @@ def terminal_of(uid, pid, start):
     return fd, found["tty"]
 
 
-def press(fd, terminal, uid, pid, start):
-    """Presses the keys in the session, on the terminal terminal_of opened. Raises Refused."""
+def press(fd, terminal, uid, pid, start, second):
+    """Presses Ctrl+X then SECOND in the session, on the terminal terminal_of opened. Raises Refused."""
     try:
-        for index, key in enumerate(KEYS):
+        for index, key in enumerate((FIRST, second)):
             if index:
                 time.sleep(GAP)
                 if users_on(terminal) != {uid}:
@@ -149,7 +152,7 @@ def answer(uid, request):
     if match is None:
         print(f"refused (request) for uid {uid}", file=sys.stderr)
         return "refused request"
-    pid, start = int(match.group(1)), match.group(2).decode()
+    pid, start, letter = int(match.group(1)), match.group(2).decode(), (match.group(3) or b"q").decode()
     os.makedirs(STATE, mode=0o700, exist_ok=True)
     with open(os.path.join(STATE, "lock"), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -160,20 +163,20 @@ def answer(uid, request):
                     os.unlink(path)
             except OSError:
                 pass
-        mark = os.path.join(STATE, f"{uid}-{pid}-{start}")
+        mark = os.path.join(STATE, f"{uid}-{pid}-{start}-{letter}")
         try:
             if os.path.exists(mark) and time.time() - os.stat(mark).st_mtime < AGAIN:
                 raise Refused("again")
             fd, terminal = terminal_of(uid, pid, start)
             # From here on it counts as pressed, whatever the kernel says.
             try:
-                press(fd, terminal, uid, pid, start)
+                press(fd, terminal, uid, pid, start, SECOND[letter])
             finally:
                 open(mark, "w").close()
         except Refused as refusal:
             print(f"refused ({refusal.args[0]}) for uid {uid}, pid {pid}", file=sys.stderr)
             return f"refused {refusal.args[0]}"
-    print(f"pressed Ctrl+X Ctrl+Q for uid {uid}, pid {pid}", file=sys.stderr)
+    print(f"pressed Ctrl+X Ctrl+{letter.upper()} for uid {uid}, pid {pid}", file=sys.stderr)
     return "pressed"
 
 

@@ -125,36 +125,47 @@ def start_of(pid):
 
 
 class RootService(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
-    """Stands in for the claude-switch-remote service: it logs each request with when it came and the status the
-    session had then. It presses for the sessions of RECONNECTS, which turns their Remote Control on, as the key does,
-    and refuses the others, as for a session that isn't the foreground of its terminal."""
+    """Stands in for the claude-switch-remote service: it logs each request with when it came, the status the session
+    had then and the letter of the second key. Ctrl+Q turns Remote Control on in the sessions of RECONNECTS, as the
+    key does, and Ctrl+R starts a turn in those of LISTENS, as /after-switch does. It refuses the others, as for a
+    session that isn't the foreground of its terminal."""
     daemon_threads = True
 
     def __init__(self, path, sessions):
         self.sessions = sessions
         self.requests = []
         self.reconnects = set()
+        self.listens = set()
         super().__init__(str(path), RootRequest)
 
 
 class RootRequest(socketserver.StreamRequestHandler):
     def handle(self):
-        pid, start = self.rfile.readline().decode().split()
+        pid, start, *letter = self.rfile.readline().decode().split()
+        if letter == ["q"]:
+            # A service installed before Ctrl+R reads Ctrl+Q only without its letter.
+            self.wfile.write(b"refused request\n")
+            return
+        letter = letter[0] if letter else "q"
         record = self.server.sessions / f"{pid}.json"
         session = json.loads(record.read_text())
-        self.server.requests.append((int(pid), start, session.get("status"), time.time()))
-        if int(pid) not in self.server.reconnects:
+        self.server.requests.append((int(pid), start, session.get("status"), time.time(), letter))
+        if int(pid) not in (self.server.reconnects if letter == "q" else self.server.listens):
             self.wfile.write(b"refused foreground\n")
             return
-        session["bridgeSessionId"] = "session_new"
+        if letter == "q":
+            session["bridgeSessionId"] = "session_new"
+        else:
+            session["statusUpdatedAt"] = now_ms()
         record.write_text(json.dumps(session))
         self.wfile.write(b"pressed\n")
 
 
 def remote_checks(m, sessions):
-    """Remote Control after a switch: the sessions that had it get /remote-control run once they dropped it and wait
-    idle. Ctrl+X Ctrl+Q, which save binds to it, is pressed at the prompt of their tmux pane, or by the root service
-    outside tmux, and /remote-control is typed at an empty prompt when the key isn't bound or didn't take."""
+    """After a switch to another claude.ai account: the sessions that had Remote Control get /remote-control run once
+    they dropped it and wait idle, then every running session gets /after-switch. Ctrl+X Ctrl+Q and Ctrl+X Ctrl+R,
+    which save binds to them, are pressed at the prompt of their tmux pane, or by the root service outside tmux, and
+    /remote-control is typed at an empty prompt when its key isn't bound or didn't take."""
     fake = m.home.parent / "tmux"
     fake.mkdir()
     bin_folder = m.home.parent / "bin"
@@ -164,22 +175,29 @@ def remote_checks(m, sessions):
     service = RootService(m.home.parent / "remote.sock", sessions)
     threading.Thread(target=service.serve_forever, daemon=True).start()
     env = {**m.env, "PATH": f"{bin_folder}:{m.env['PATH']}", "FAKE_TMUX": str(fake), "CLAUDE_SWITCH_REMOTE_DROP": "3",
-           "CLAUDE_SWITCH_REMOTE_BACK": "2", "CLAUDE_SWITCH_REMOTE_WAIT": "12",
+           "CLAUDE_SWITCH_REMOTE_BACK": "2", "CLAUDE_SWITCH_REMOTE_WAIT": "12", "CLAUDE_SWITCH_REMOTE_SETTLE": "1",
            "CLAUDE_SWITCH_REMOTE_SOCKET": str(m.home.parent / "remote.sock")}
     keybindings = m.home / ".claude" / "keybindings.json"
-    chord = {"ctrl+x ctrl+q": "command:remote-control"}
+    message = m.home / ".claude" / "skills" / "after-switch" / "SKILL.md"
+    bound = {"ctrl+x ctrl+q": "command:remote-control", "ctrl+x ctrl+r": "command:after-switch"}
+    pressed = [["C-x"], ["C-q"]]
+    told = [["C-x"], ["C-r"]]
+    typed = [["-l", "/remote-control"], ["Enter"]]
 
     def run(*arguments, **changes):
         result = subprocess.run([sys.executable, "-I", str(HELPER), "remote", *arguments], env={**env, **changes},
                                 capture_output=True, text=True, timeout=90)
         return result.returncode, result.stdout
 
-    names = ("idle", "busy", "typing", "elsewhere", "scrolled", "without", "keeps", "other", "stuck", "shell")
-    processes = {name: subprocess.Popen(["sleep", "300"]) for name in names}
+    names = ("idle", "busy", "typing", "elsewhere", "scrolled", "without", "keeps", "other", "stuck", "shell",
+             "working", "deaf", "nowhere")
+    # With no terminal of their own, also when the suite runs from one.
+    processes = {name: subprocess.Popen(["sleep", "300"], start_new_session=True) for name in names}
     pids = {name: process.pid for name, process in processes.items()}
     masters = []
     # Outside tmux, on a terminal of their own.
-    for name in ("terminal", "frozen"):
+    outside = ("terminal", "frozen", "plain", "unheard")
+    for name in outside:
         pid, master = pty.fork()
         if pid == 0:
             try:
@@ -192,14 +210,14 @@ def remote_checks(m, sessions):
     records, panes = {}, {}
 
     def session(name, pane=None, bridge="session_old", status="idle", x=2, line=empty, mode="0", reconnects=True,
-                pane_pid=None):
+                listens=True, pane_pid=None):
         pid = pids[name]
         record = {"pid": pid, "procStart": start_of(pid), "kind": "interactive", "status": status, "name": name,
                   "bridgeSessionId": bridge}
         if pane:
             record["tmux"] = f"claude-{name}:@1.{pane}"
             panes[pane] = {"pane_pid": pane_pid or pid, "x": x, "y": 40, "mode": mode, "line": line,
-                           "record": str(sessions / f"{pid}.json"), "reconnects": reconnects}
+                           "record": str(sessions / f"{pid}.json"), "reconnects": reconnects, "listens": listens}
         records[name] = sessions / f"{pid}.json"
         records[name].write_text(json.dumps(record))
 
@@ -215,29 +233,44 @@ def remote_checks(m, sessions):
                                  stdout=subprocess.PIPE, text=True)
         time.sleep(2.5)
         rc, _ = run("restore", **changes)
-        update("busy", status="idle")
+        if records["busy"].exists():
+            update("busy", status="idle")
         out, _ = first.communicate(timeout=90)
         return rc, out, dict(reversed(line.split("\t")) for line in out.splitlines())
 
     def sent():
-        """The keys sent to each pane, in order, and the status of its session each time."""
+        """The keys sent to each pane, in order, when each went, and the status of its session each time."""
         log = [json.loads(line) for line in (fake / "log").read_text().splitlines()] if (fake / "log").exists() else []
-        by_pane = {}
+        keys, times = {}, {}
         for entry in log:
             if entry["args"][0] == "send-keys":
-                by_pane.setdefault(entry["args"][2], []).append(entry["args"][3:])
-        return by_pane, [entry["status"] for entry in log if entry["args"][0] == "send-keys"]
+                keys.setdefault(entry["args"][2], []).append(entry["args"][3:])
+                times.setdefault(entry["args"][2], []).append(entry["at"])
+        return keys, times, [entry["status"] for entry in log if entry["args"][0] == "send-keys"]
+
+    def asked(name):
+        """The letters the root service was asked to press in the session NAME, and when."""
+        return [(request[4], request[3]) for request in service.requests if request[0] == pids[name]]
+
+    def again(moments, gap):
+        return all(later - earlier >= gap for earlier, later in zip(moments, moments[1:]))
 
     try:
         session("idle", "%1")
         (fake / "panes.json").write_text(json.dumps(panes))
         rc, _ = run("save")
         written = json.loads(keybindings.read_text())
-        check("remote save: binds the key in a new keybindings.json", rc == 0
+        check("remote save: binds both keys in a new keybindings.json", rc == 0
               and written.get("$schema") == "https://www.schemastore.org/claude-code-keybindings.json"
-              and written.get("bindings") == [{"context": "Chat", "bindings": chord}])
+              and written.get("bindings") == [{"context": "Chat", "bindings": bound}])
         check("remote save: a new keybindings.json is readable, as Claude Code writes it",
               keybindings.stat().st_mode & 0o777 == 0o644)
+        text = message.read_text() if message.exists() else ""
+        check("remote save: writes /after-switch, a skill Claude doesn't run on its own",
+              "\ndisable-model-invocation: true\n" in text and "send that reply again in full" in text)
+        check("remote save: /after-switch readable, as Claude Code writes its files",
+              message.exists() and message.stat().st_mode & 0o777 == 0o644)
+        message.write_text("my own words\n")
         (m.store / ".remote.json").unlink()
         keybindings.write_text(json.dumps({"bindings": [{"context": "Chat", "bindings": {"ctrl+e": "chat:externalEditor"}}]}))
         keybindings.chmod(0o600)
@@ -249,21 +282,31 @@ def remote_checks(m, sessions):
         session("keeps", "%7")
         session("other", "%8", pane_pid=pids["shell"])
         session("stuck", "%9", reconnects=False)
+        session("working", "%10", bridge=None, status="busy")
+        session("deaf", "%11", listens=False)
         session("terminal")
         session("frozen")
+        session("plain", bridge=None)
+        session("unheard", bridge=None)
+        session("nowhere", bridge=None)
         service.reconnects.add(pids["terminal"])
+        service.listens.update((pids["terminal"], pids["plain"]))
         (fake / "panes.json").write_text(json.dumps(panes))
         rc, _ = run("save")
         state = json.loads((m.store / ".remote.json").read_text())
-        check("remote save: the sessions with Remote Control on", rc == 0 and sorted(s["name"] for s in state["sessions"])
-              == ["busy", "elsewhere", "frozen", "idle", "keeps", "other", "scrolled", "stuck", "terminal", "typing"])
+        check("remote save: every running session", rc == 0
+              and sorted(s["name"] for s in state["sessions"]) == sorted(records))
+        unplugged = sorted(s["name"] for s in state["sessions"] if not s["remote"])
+        check("remote save: which of them have Remote Control on",
+              unplugged == ["nowhere", "plain", "unheard", "without", "working"])
         check("remote save: each with its pane", {s["name"]: s["pane"] for s in state["sessions"]}["idle"] == "%1"
               and {s["name"]: s["pane"] for s in state["sessions"]}["elsewhere"] is None)
         check("remote save: private", (m.store / ".remote.json").stat().st_mode & 0o777 == 0o600)
-        check("remote save: the key bound beside the bindings of the user, in a file that keeps its mode",
+        check("remote save: both keys bound beside the bindings of the user, in a file that keeps its mode",
               json.loads(keybindings.read_text())["bindings"]
-              == [{"context": "Chat", "bindings": {"ctrl+e": "chat:externalEditor", **chord}}]
+              == [{"context": "Chat", "bindings": {"ctrl+e": "chat:externalEditor", **bound}}]
               and keybindings.stat().st_mode & 0o777 == 0o600)
+        check("remote save: an /after-switch the user changed stays as it is", message.read_text() == "my own words\n")
         rc, out = run("held")
         check("remote held: what a switch would take for good, with no terminal of its own or in another pane",
               rc == 0 and sorted(out.split()) == ["elsewhere", "other"])
@@ -271,65 +314,126 @@ def remote_checks(m, sessions):
         check("remote held: outside tmux without the root service", rc == 0
               and sorted(out.split()) == ["elsewhere", "frozen", "other", "terminal"])
         # Claude Code drops Remote Control within seconds of the switch, but in a session that keeps it.
-        for name in ("idle", "busy", "typing", "elsewhere", "scrolled", "other", "stuck", "terminal", "frozen"):
+        for name in ("idle", "busy", "typing", "elsewhere", "scrolled", "other", "stuck", "terminal", "frozen", "deaf"):
             update(name, bridgeSessionId=None)
+        # Another switch before they're back: the sessions that wait stay as they were, a session with Remote Control
+        # on starts again.
+        run("save")
+        waiting = {s["name"]: s for s in json.loads((m.store / ".remote.json").read_text())["sessions"]}
+        check("remote save: a session still waiting from a switch before stays as it was",
+              {name: entry for name, entry in waiting.items() if name != "keeps"}
+              == {s["name"]: s for s in state["sessions"] if s["name"] != "keeps"})
         rc, out, outcomes = restore()
         check("remote restore: one at a time", rc == 1)
         check("remote restore: back where the key was pressed and took",
-              all(outcomes.get(name) == "back" for name in ("idle", "busy", "typing", "terminal")))
+              all(outcomes.get(name) == "back" for name in ("idle", "busy", "typing", "terminal", "deaf")))
         check("remote restore: lost where nothing can press it, or it didn't take",
               all(outcomes.get(name) == "lost" for name in ("elsewhere", "scrolled", "other", "stuck", "frozen")))
-        check("remote restore: nothing said of a session that kept it", "keeps" not in outcomes)
+        check("remote restore: told where /after-switch took in a session without Remote Control",
+              outcomes.get("without") == "told" and outcomes.get("plain") == "told")
+        check("remote restore: nothing said of a session that kept it, one in use, or one /after-switch never reached",
+              not {"keeps", "working", "unheard", "nowhere"} & set(outcomes))
         check("remote restore: a session nothing can reach is said first", out.splitlines()[0] == "lost\telsewhere")
-        keys, statuses = sent()
-        pressed = [["C-x"], ["C-q"]]
-        check("remote restore: Ctrl+X then Ctrl+Q at the prompt of each pane, with text typed or not",
-              keys.get("%1") == pressed and keys.get("%2") == pressed and keys.get("%3") == pressed)
+        keys, times, statuses = sent()
+        check("remote restore: Ctrl+X Ctrl+Q at the prompt of each pane, with text typed or not, then Ctrl+X Ctrl+R",
+              all(keys.get(pane) == pressed + told for pane in ("%1", "%2", "%3")))
         check("remote restore: /remote-control typed at the empty prompt when the key didn't take, 3 tries in all",
-              keys.get("%9") == pressed + [["-l", "/remote-control"], ["Enter"]] * 2)
+              keys.get("%9") == pressed + typed * 2)
         check("remote restore: nothing in a pane scrolled back or that runs another program",
               "%5" not in keys and "%8" not in keys)
+        check("remote restore: /after-switch in a session without Remote Control too", keys.get("%6") == told)
+        check("remote restore: nothing in a session in use", "%10" not in keys)
+        check("remote restore: /after-switch again where it didn't take, 3 times in all",
+              keys.get("%11") == pressed + told * 3)
+        check("remote restore: the next /after-switch once the last had time to take",
+              again(times.get("%11", [])[3::2], 1.9))
         check("remote restore: only in an idle session", statuses and all(status == "idle" for status in statuses))
-        check("remote restore: outside tmux the root service presses it, for the session that started then",
-              [request[:2] for request in service.requests if request[0] == pids["terminal"]]
-              == [(pids["terminal"], start_of(pids["terminal"]))])
-        tried = [request[3] for request in service.requests if request[0] == pids["frozen"]]
-        check("remote restore: 3 tries outside tmux where the service refused", len(tried) == 3)
+        start = start_of(pids["terminal"])
+        check("remote restore: outside tmux the root service presses both keys, for the session that started then",
+              [(request[1], request[4]) for request in service.requests if request[0] == pids["terminal"]]
+              == [(start, "q"), (start, "r")])
+        check("remote restore: outside tmux /after-switch in a session without Remote Control too",
+              [letter for letter, _ in asked("plain")] == ["r"])
+        check("remote restore: 3 tries outside tmux where the service refused, and no /after-switch then",
+              [letter for letter, _ in asked("frozen")] == ["q"] * 3)
         check("remote restore: the next try once the last had time to take",
-              all(later - earlier >= 1.9 for earlier, later in zip(tried, tried[1:])))
+              again([moment for _, moment in asked("frozen")], 1.9))
+        check("remote restore: nothing outside tmux in a session with no terminal of its own", asked("nowhere") == [])
+        check("remote restore: /after-switch 3 times outside tmux where the service refused it",
+              [letter for letter, _ in asked("unheard")] == ["r"] * 3
+              and again([moment for _, moment in asked("unheard")], 1.9))
         check("remote restore: the root service only for an idle session",
               all(request[2] == "idle" for request in service.requests))
         check("remote restore: nothing left", not (m.store / ".remote.json").exists())
         rc, out = run("held")
         check("remote held: none once those sessions have it off", rc == 1 and out == "")
 
-        # A keybindings.json Claude Code can't read, or a key of the user's in the way: the file stays as it is, the
-        # key is never pressed, and nothing reaches a session outside tmux.
-        service.requests.clear()
-        (fake / "log").unlink()
-        for name in ("idle", "typing", "terminal"):
-            update(name, bridgeSessionId="session_old")
-        for text in ("{ not json", json.dumps({"bindings": [{"context": "Select", "bindings": {"ctrl+q": "select:cancel"}}]})):
+        # A keybindings.json Claude Code can't read, or a key of the user's in the way: the file stays as it is but for
+        # the other key, and a key that isn't bound is never pressed. Without its key /remote-control is typed at an
+        # empty prompt in tmux, and /after-switch goes nowhere.
+        for name in set(records) - {"idle", "typing", "terminal"}:
+            records[name].unlink(missing_ok=True)
+        message.unlink()
+
+        def round_of(text, **changes):
+            """Saves with TEXT in keybindings.json, then restores once the sessions dropped Remote Control."""
+            service.requests.clear()
+            (fake / "log").unlink(missing_ok=True)
+            for name in ("idle", "typing", "terminal"):
+                update(name, bridgeSessionId="session_old")
             keybindings.write_text(text)
-            rc, out = run("held")
-            check(f"remote held: outside tmux when the key can't be bound ({text[:10]})", rc == 0 and out.split() == ["terminal"])
+            held = run("held")
             run("save")
-            check(f"remote save: keybindings.json left as it was ({text[:10]})", keybindings.read_text() == text)
-        for name in ("idle", "typing", "terminal"):
-            update(name, bridgeSessionId=None)
-        rc, out, outcomes = restore(CLAUDE_SWITCH_REMOTE_WAIT="5")
-        keys, _ = sent()
+            saved = keybindings.read_text()
+            for name in ("idle", "typing", "terminal"):
+                update(name, bridgeSessionId=None)
+            outcomes = restore(CLAUDE_SWITCH_REMOTE_WAIT="5", **changes)[2]
+            keys, times, _ = sent()
+            return held, saved, outcomes, keys, times
+
+        held, saved, outcomes, keys, _ = round_of("{ not json")
+        check("remote held: outside tmux when the keys can't be bound", held == (0, "terminal\n"))
+        check("remote save: a keybindings.json Claude Code can't read left as it was", saved == "{ not json")
+        check("remote save: no /after-switch without its key", not message.exists())
         check("remote restore: without the key, /remote-control typed at an empty prompt",
-              outcomes.get("idle") == "back" and keys.get("%1") == [["-l", "/remote-control"], ["Enter"]])
+              outcomes.get("idle") == "back" and keys.get("%1") == typed)
         check("remote restore: without the key, nothing over text typed at the prompt",
               outcomes.get("typing") == "lost" and "%3" not in keys)
         check("remote restore: without the key, nothing outside tmux",
               outcomes.get("terminal") == "lost" and service.requests == [])
+
+        theirs = {"context": "Select", "bindings": {"ctrl+q": "select:cancel"}}
+        # A longer wait once Remote Control is back, which the next step alone doesn't give.
+        held, saved, outcomes, keys, times = round_of(json.dumps({"bindings": [theirs]}),
+                                                      CLAUDE_SWITCH_REMOTE_SETTLE="4")
+        check("remote held: outside tmux when Ctrl+Q is the user's", held == (0, "terminal\n"))
+        check("remote save: with Ctrl+Q the user's, the key of /after-switch alone",
+              json.loads(saved)["bindings"]
+              == [theirs, {"context": "Chat", "bindings": {"ctrl+x ctrl+r": "command:after-switch"}}])
+        check("remote save: /after-switch written with its key", message.exists())
+        check("remote restore: /remote-control typed at an empty prompt, then /after-switch by its key",
+              outcomes.get("idle") == "back" and keys.get("%1") == typed + told)
+        check("remote restore: /after-switch a few seconds after Remote Control is back",
+              len(times.get("%1", [])) == 4 and times["%1"][2] - times["%1"][1] >= 3.9)
+        check("remote restore: without the key of /remote-control, nothing over text typed, nor outside tmux",
+              outcomes.get("typing") == "lost" and "%3" not in keys and outcomes.get("terminal") == "lost"
+              and service.requests == [])
+
+        # /after-switch stays from the round before.
+        theirs = {"context": "Chat", "bindings": {"ctrl+x ctrl+r": None}}
+        held, saved, outcomes, keys, _ = round_of(json.dumps({"bindings": [theirs]}))
+        check("remote save: with Ctrl+X Ctrl+R the user's, the key of /remote-control alone",
+              json.loads(saved)["bindings"]
+              == [{"context": "Chat", "bindings": {"ctrl+x ctrl+r": None, "ctrl+x ctrl+q": "command:remote-control"}}])
+        check("remote restore: no /after-switch when its key is the user's",
+              all(outcomes.get(name) == "back" for name in ("idle", "typing", "terminal"))
+              and keys.get("%1") == pressed and keys.get("%3") == pressed
+              and [request[4] for request in service.requests] == ["q"])
     finally:
         for process in processes.values():
             process.kill()
             process.wait()
-        for name in ("terminal", "frozen"):
+        for name in outside:
             try:
                 os.kill(pids[name], 9)
                 os.waitpid(pids[name], 0)
