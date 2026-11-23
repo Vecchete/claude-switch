@@ -5,7 +5,7 @@ few things were never run there for real yet, see [Status](#status) and
 [Not verified yet](#not-verified-yet).
 
 The port follows `bin/claude-switch`, `share/chrome-host.py`, `share/desktop.py` and `share/usage.py` as of
-commit 846289c, [gateway keys](../docs/gateway-keys.md) and [automatic switching](../docs/auto.md) included. When the Linux version changes, the port changes with it:
+commit 57961fb, [gateway keys](../docs/gateway-keys.md) and [automatic switching](../docs/auto.md) included. When the Linux version changes, the port changes with it:
 `windows/tests/run.sh` says on Linux whether it still behaves the same, and `windows\tests\run.ps1` checks
 on Windows what only Windows does.
 
@@ -20,7 +20,7 @@ settings Claude Desktop keeps per account, which go over to the next account.
 | Part | Files | State |
 |---|---|---|
 | The command | `claude-switch.py`, `claude-switch.cmd` | Runs on Windows: the store, `list` and `rename`. No real switch yet |
-| Gateway keys | `claude-switch.py` | `key import`, `add`, `renew` and `remove` and the switches to and from a key pass on scratch profiles, on Windows and on Linux. Not tried against a real gateway yet |
+| Gateway keys | `claude-switch.py` | `key import`, `add`, `renew` and `remove` and the switches to and from a key pass on scratch profiles, on Windows and on Linux. An Anthropic API key was kept for real from the prompt on the test machine. Not tried against a real gateway yet |
 | Automatic switching | `claude-switch.py`, `usage.py`, the scheduled task `claude-switch-watch` | `auto on` and `off`, `auto order`, the LEFT column, the watch and the hook pass on a scratch profile against a stand-in usage endpoint and gateway. On the test machine `list` read both subscriptions, `auto on` wrote the hook and turned the task on, and the task ran from Task Scheduler with result 0. No real session has met a limit with it on Windows yet |
 | claude.ai in Chrome | `chrome-host.py`, `chrome-host.cmd`, and the extension of `share/chrome-extension` as it is | The named pipe works end to end with a stand-in extension, a second host and the pending file. Not tried with the extension loaded in Chrome yet |
 | Claude Desktop | `desktop.py`, `localstorage.py` | Finds the folder, the main process and the account of a running Desktop. Switch, quit and the carrying over pass on a scratch profile, and the carrying over ran both ways on a copy of real Desktop data. Never quit or switched for real |
@@ -55,8 +55,8 @@ settings Claude Desktop keeps per account, which go over to the next account.
    `claude-switch key import NAME` or `claude-switch key add NAME`, see
    [Gateway keys](../docs/gateway-keys.md). In the prompt, `a` asks for the kind of account first: `s` signs
    in a subscription, and `k` keeps an API key or a gateway key. It asks for a name, the URL of the gateway
-   (Enter for the Anthropic API) and then the key. Last it asks whether to switch to the new account once
-   it's added, no by default. `claude-switch help` has the rest.
+   (Enter for the Anthropic API) and then the key, which shows as you paste it. Last it asks whether to
+   switch to the new account once it's added, no by default. `claude-switch help` has the rest.
 
 ## Where things are
 
@@ -144,8 +144,8 @@ PowerShell does what only PowerShell does: the install, the Tab completion and t
   switch makes and removes one there first. It doesn't use Python's `tempfile` for that, which takes the
   access denied of Windows for a name already in use and tries other names without end.
 - A gateway token piped into `key add` or `key renew` from Windows PowerShell can come with a BOM in
-  front, which is dropped, and a Windows line end goes with the other whitespace. Typed at the prompt, the
-  token goes through the console without echo.
+  front, which is dropped, and a Windows line end goes with the other whitespace. Typed or pasted at the
+  prompt, the token shows in the console, so a paste can be checked, as on Linux.
 - The file of a gateway key replaces what a file name can't hold with `_`, as on Linux. On NTFS that
   matters more: a colon would name a stream of another file. NTFS also takes `key_GW.json` and
   `key_gw.json` for the same file, so a key named like another but for the case is refused.
@@ -290,8 +290,8 @@ What a tester on Windows can still check:
    drafts of the first account are still there.
 4. Switch with Chrome open, then with Chrome closed (the pending file), and run `chrome-host.py --status`.
 5. Switch while `claude remote-control` runs.
-6. Keep a gateway key with `claude-switch key add`, typing the token at the prompt in Windows Terminal,
-   with PowerShell and with cmd. Then switch to it and back with a session open, and check with
+6. Keep a gateway key with `claude-switch key add` in PowerShell and in cmd, pasting the token at the
+   prompt: it should show as it's pasted. Then switch to it and back with a session open, and check with
    `claude auth status` that the session follows.
 7. With automatic switching on, let a session in a terminal meet the weekly limit of its account: the
    machine should move to the next account and the session carry on by itself. Then let the watch task

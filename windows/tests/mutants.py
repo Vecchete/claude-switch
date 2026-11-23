@@ -301,6 +301,9 @@ MUTANTS = [
      ""),
     ("chrome-back-signs-out", "host", "chrome", '        if argv[1] == "--back" and load(account) is None:\n',
      "        if False:\n"),
+    # The key shows as it's pasted.
+    ("key-pasted-unseen", "switch", "keys", '            token = input(f"Gateway key for {label}: ")\n',
+     '            token = __import__("getpass").getpass(f"Gateway key for {label}: ")\n'),
     ("temp-files-of-others-removed", "switch", "keys", "    for path in WRITING:\n",
      '    for path in (f"{CREDENTIALS}.switch", f"{CONFIG}.switch", f"{settings_target()}.switch"):\n'),
     ("temp-files-left", "switch", "keys",

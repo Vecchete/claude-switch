@@ -27,7 +27,6 @@ account has left and ranks them.
 """
 import contextlib
 import datetime
-import getpass
 import hashlib
 import json
 import os
@@ -167,10 +166,11 @@ Usage:
                                          account NAME: its token, URL and model names.
   claude-switch key add NAME [--switch] [--like KEY] [--api-key] [--base-url URL] [--env VAR=VALUE]...
                                          Keep a gateway key as the account NAME, and switch to it with
-                                         --switch. The token is asked without echo, or read from the
-                                         standard input. --like takes the URL and model names of KEY,
-                                         --api-key sends the token as an Anthropic API key, x-api-key,
-                                         rather than a bearer token.
+                                         --switch. The token is asked on the terminal, where it shows
+                                         as you type or paste it, or read from the standard input.
+                                         --like takes the URL and model names of KEY, --api-key sends
+                                         the token as an Anthropic API key, x-api-key, rather than a
+                                         bearer token.
   claude-switch key renew NAME           Give the gateway key NAME a new token, asked the same way.
   claude-switch key remove NAME          Forget the gateway key NAME, and take it out of
                                          ~/.claude/settings.json when it is active.
@@ -745,14 +745,14 @@ def key_usage():
 
 
 def read_token(label):
-    """A token asked without echo, or read from the standard input. The store is unlocked while someone types it. Windows
-    PowerShell can put a BOM before what it pipes, which is no part of a token."""
+    """A token asked on the terminal, where it shows as it's typed or pasted, so a paste can be checked, or read from the
+    standard input. The store is unlocked while someone types it. Windows PowerShell can put a BOM before what it pipes,
+    which is no part of a token."""
     unlock_store()
     token = ""
     try:
         if sys.stdin is not None and sys.stdin.isatty():
-            # TODO(windows): type a key at this prompt in Windows Terminal, with PowerShell and with cmd.
-            token = getpass.getpass(f"Gateway key for {label}: ")
+            token = input(f"Gateway key for {label}: ")
         elif sys.stdin is not None:
             token = sys.stdin.buffer.readline().decode("utf-8-sig", errors="replace")
     except EOFError:
@@ -790,8 +790,8 @@ def key_file(name):
 
 
 def key_new(action, name, options):
-    """Keeps a gateway key as the account NAME: the one in settings.json (import), or a token asked without echo or read
-    from the standard input (add)."""
+    """Keeps a gateway key as the account NAME: the one in settings.json (import), or a token asked on the terminal or
+    read from the standard input (add)."""
     problem = name_problem(name)
     if problem is not None:
         die(problem)

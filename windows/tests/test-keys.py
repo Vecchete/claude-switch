@@ -630,6 +630,25 @@ try:
     check("import --switch: refused, it's the key in use already", result.returncode != 0
           and "Usage: claude-switch key import NAME" in out(result) and not key("other").exists())
 
+    # The key shows as it's typed or pasted: it's asked with input, never with getpass.
+    asker = root / "asker.py"
+    asker.write_text(
+        "import builtins, getpass, importlib.util, sys\n"
+        "spec = importlib.util.spec_from_file_location('claude_switch', sys.argv[1])\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(module)\n"
+        "def hidden(*arguments, **options):\n"
+        "    raise SystemExit('asked without echo')\n"
+        "getpass.getpass = hidden\n"
+        "builtins.input = lambda question='': print('ASK', question, flush=True) or 'K9-secret'\n"
+        "module.sys.stdin = type('Terminal', (), {'isatty': lambda self: True})()\n"
+        "module.lock_store = module.unlock_store = lambda: None\n"
+        "print('TOKEN', module.read_token('gw9') == 'K9-secret')\n", encoding="utf-8")
+    text = out(subprocess.run([sys.executable, "-I", str(asker), str(SCRIPT)], env=P.env, cwd=P.home, input="",
+                              capture_output=True, text=True, encoding="utf-8", timeout=60))
+    check("the key is asked where it shows as it's typed or pasted", "ASK Gateway key for gw9: " in text
+          and "TOKEN True" in text)
+
     # What only Windows does to the keys, checked on Linux as well where it means the same.
     # Windows PowerShell can put a BOM before what it pipes into a program.
     fresh("bom-token")
