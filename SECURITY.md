@@ -37,6 +37,9 @@ Only the latest commit of `main` gets fixes. There are no releases yet.
 - With automatic switching on, `~/.claude/settings.json` holds a hook that runs `claude-switch hook` when
   a Claude Code turn ends on an API error. What the hook prints goes to Claude, so it prints one sentence
   that names accounts and never a token, and says the rest in `~/.claude-accounts/.auto.log`.
+- After a switch to another claude.ai account, it types `/remote-control`, and nothing else, in the tmux
+  pane of each session that had Remote Control on, once per session, and only while the session waits idle
+  at its prompt with nothing typed, out of copy mode.
 - The Chrome extension sees claude.ai only, and talks to the host through the native messaging of Chrome.
   claude-switch reaches the host through a Unix socket in `~/.claude-accounts`.
 - The Claude Desktop sign-in is saved as Desktop encrypted it, and never decrypted.

@@ -46,6 +46,8 @@ ORDER_FILE=$STORE/.auto-order
 DEFAULT_ORDER="ultra key max"
 # When the last switch happened, in milliseconds.
 SWITCHED=$STORE/.switched
+# The sessions a switch to another claude.ai account took Remote Control from, until claude-switch remote is done.
+REMOTE=$STORE/.remote.json
 # What the automatic switches did and what claude-switch said meanwhile: a hook's stderr goes to Claude.
 AUTO_LOG=$STORE/.auto.log
 WATCH_TIMER=claude-switch-watch.timer
@@ -191,6 +193,10 @@ Adding an account doesn't switch to it, unless with --switch. With automatic swi
 account ranks with the others: added without --switch, the machine goes to it at once when it comes
 first, and added with --switch, the next check moves the machine on when another account comes first.
 
+A switch to another claude.ai account takes Remote Control from the sessions. claude-switch types
+/remote-control back in the tmux pane of each, once it waits idle at an empty prompt, and names the
+sessions it can't bring back.
+
 The credit an Anthropic API key has left is not readable: no API gives it out, and the Billing page of
 the Claude Console shows it.
 
@@ -328,7 +334,7 @@ name_problem() {
             printf 'A name must not be empty, start with - or hold control characters.'
             return 0
             ;;
-        list|login|key|rename|delete|refresh|help|auto|watch|hook)
+        list|login|key|rename|delete|refresh|help|auto|watch|hook|remote)
             printf '%s is a command of this script, choose another name.' "$1"
             return 0
             ;;
@@ -916,6 +922,7 @@ switch_to() {
     fi
     lock_live
     save_live
+    remote_save
     apply_account "$file"
     release_locks
     [ "$(live_file || true)" = "$file" ] || die "A running session wrote over the switch. Run it again."
@@ -927,6 +934,45 @@ switch_to() {
     printf 'Switched to %s.\n' "$LABEL"
     web_switch "$file"
     desktop_switch "$file"
+    remote_follow
+}
+
+# Remembers the sessions with Remote Control on, before a switch to another claude.ai account takes it from them:
+# Claude Code drops it within seconds and only /remote-control brings it back.
+remote_save() {
+    [ -x "$USAGE_HELPER" ] || return 0
+    "$USAGE_HELPER" remote save 9>&- 2>/dev/null || true
+}
+
+# Starts claude-switch remote out of this run, in a scope of its own when the user's systemd is there to give one:
+# the watch or the hook that switched ends long before the sessions are idle again. It doesn't hold the store.
+remote_follow() {
+    local command=(bash "$0" remote)
+    [ -s "$REMOTE" ] && [ -x "$USAGE_HELPER" ] || return 0
+    if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -e "$XDG_RUNTIME_DIR/systemd/private" ] && command -v systemd-run >/dev/null; then
+        command=(systemd-run --user --scope --quiet --collect -- "${command[@]}")
+    fi
+    setsid -f "${command[@]}" </dev/null >/dev/null 2>&1 9>&- || true
+}
+
+# Types /remote-control in the tmux pane of each session remote_save remembered, once it dropped Remote Control and
+# waits idle at an empty prompt, then says where it's back and where it isn't.
+cmd_remote() {
+    local outcome name back=0 lost=() names
+    [ $# -eq 0 ] || die "Usage: claude-switch remote"
+    [ -x "$USAGE_HELPER" ] || return 0
+    while IFS=$'\t' read -r outcome name; do
+        case $outcome in
+            back) back=$((back + 1)) ;;
+            lost) lost+=("$name") ;;
+        esac
+    done < <("$USAGE_HELPER" remote restore 2>/dev/null || true)
+    if [ "${#lost[@]}" -gt 0 ]; then
+        names=$(printf '%s, ' "${lost[@]}")
+        notify "Remote Control is off in ${names%, }" "Run /remote-control in the session to bring it back on this account."
+    elif [ "$back" -gt 0 ] && read_account "$(live_file)" 2>/dev/null; then
+        notify "Remote Control is back" "In $back session$([ "$back" -eq 1 ] || printf s), under $LABEL: open it on claude.ai or in the Claude app signed in to it."
+    fi
 }
 
 # Signs in beside the store and not in ~/.claude, so the live account changes only on a switch, the one --switch
@@ -1805,6 +1851,12 @@ case ${1:-} in
     watch)
         # The timer runs this every 5 minutes: nothing to do without automatic switching or an open session.
         auto_on && [ -x "$USAGE_HELPER" ] && "$USAGE_HELPER" sessions || exit 0
+        ;;
+    remote)
+        # It waits for the sessions for minutes, so it doesn't lock the store.
+        shift
+        cmd_remote "$@"
+        exit 0
         ;;
     hook)
         # Claude reads what the hook says: everything but its last sentence goes to the log.

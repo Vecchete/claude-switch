@@ -292,7 +292,9 @@ and says how to report a problem.
 - Claude Desktop must be closed for a switch, so an open Desktop is restarted unless you say no, and on
   an automatic switch without asking. The first Remote Control session of an account in Chrome or in
   Desktop asks for one sign-in.
-- A switch disconnects Remote Control. `/remote-control` in a session registers it with the new account.
+- A switch to another claude.ai account takes Remote Control from the sessions. claude-switch types
+  `/remote-control` back in those that run in tmux, once each waits idle at an empty prompt, and names the
+  others. A phone or another browser shows them once it's signed in to the new account.
 - What a subscription has left comes from an endpoint Anthropic doesn't document. When it changes, `list`
   shows `-` and automatic switching moves on only when a session meets a limit.
 - Automatic switching wakes a session through a `StopFailure` hook with `asyncRewake`, checked with Claude

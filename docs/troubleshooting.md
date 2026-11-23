@@ -95,6 +95,18 @@ once, and the next switch saves the new session.
 The first Remote Control session of an account in a browser or in Desktop asks for a fresh sign-in.
 After that the registration moves with the account. See [chrome.md](chrome.md#remote-control).
 
+### Remote Control didn't come back after a switch
+
+The notification `Remote Control is off in ...` names the sessions where `claude-switch remote` couldn't
+type `/remote-control`: one that doesn't run in tmux, one with text at its prompt or a pane scrolled back
+in copy mode, or one that stayed busy for 15 minutes. Run `/remote-control` in it. When the sessions are
+back but don't show on your phone or another computer, sign that device in to the account the machine
+moved to: the sessions are under that account now.
+
+On a Claude Code older than 2.1.330, the mobile app can show a session as working after Remote Control was
+turned on mid-conversation, which is what `/remote-control` after a switch does. Exit such a session and
+resume it with `claude --resume` to run the installed version.
+
 ### `Claude Desktop is open, so it stays on its account.`
 
 Desktop must be closed for a switch, and you answered no, or the switch came from a script without a

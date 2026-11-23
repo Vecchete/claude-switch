@@ -27,14 +27,21 @@ resets before one that doesn't, credit nobody can read last.
                                           authentication_failed. Prints why, as a phrase
     usage.py why FILE                     why FILE can't be used now, as a phrase, exit 1 when it can
     usage.py first FILE...                the account that has room again first, and when
+    usage.py remote save                  remember the sessions with Remote Control on, before a switch to another
+                                          claude.ai account takes it from them
+    usage.py remote restore               type /remote-control in the tmux pane of each of them once it dropped Remote
+                                          Control and waits idle at an empty prompt. Prints back or lost, a tab and
+                                          the name of each session, exit 1 when another restore runs
 """
 import argparse
 import concurrent.futures
 import datetime
+import fcntl
 import json
 import math
 import os
 import pathlib
+import subprocess
 import sys
 import time
 import urllib.error
@@ -59,6 +66,15 @@ KINDS = ("ultra", "key", "max")
 MINUTE = 60 * 1000
 HOLDS = {"limit": 15 * MINUTE, "rate": 5 * MINUTE, "credit": 24 * 60 * MINUTE, "budget": 60 * MINUTE,
          "sign-in": 60 * MINUTE}
+# The sessions a switch took Remote Control from, and how far bringing it back went.
+REMOTE = STORE / ".remote.json"
+# In seconds: how long a session has to drop Remote Control after the switch, which Claude Code does within seconds,
+# how long it has to be back once /remote-control was typed, and how long a session is waited for to be idle.
+REMOTE_DROP = float(os.environ.get("CLAUDE_SWITCH_REMOTE_DROP") or 60)
+REMOTE_BACK = float(os.environ.get("CLAUDE_SWITCH_REMOTE_BACK") or 30)
+REMOTE_WAIT = float(os.environ.get("CLAUDE_SWITCH_REMOTE_WAIT") or 900)
+# The prompt of Claude Code, where the cursor waits when nothing is typed.
+PROMPTS = (chr(0x276F), ">")
 
 
 def now_ms():
@@ -548,19 +564,153 @@ def command_first(arguments):
     return 0
 
 
+def live_session(path):
+    """The record of a session at PATH while its process runs: the pid it was started with, started at the same
+    moment. None for any other."""
+    session = load(path)
+    if session is None:
+        return None
+    try:
+        stat = pathlib.Path(f"/proc/{int(session.get('pid'))}/stat").read_text()
+    except (OSError, TypeError, ValueError):
+        return None
+    fields = stat.rpartition(")")[2].split()
+    started = session.get("procStart")
+    if started is None or (len(fields) > 19 and fields[19] == str(started)):
+        return session
+    return None
+
+
 def command_sessions(arguments):
-    """A session counts while its process runs: the pid it was started with, started at the same moment."""
-    for path in SESSIONS.glob("*.json"):
-        session = load(path) or {}
+    return 0 if any(live_session(path) for path in SESSIONS.glob("*.json")) else 1
+
+
+def parent_of(pid):
+    try:
+        return int(pathlib.Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def descends(pid, ancestor):
+    """True when the process PID is ANCESTOR or runs under it."""
+    for _ in range(64):
+        if pid == ancestor:
+            return True
+        if pid is None or pid <= 1:
+            return False
+        pid = parent_of(pid)
+    return False
+
+
+def tmux(*arguments):
+    try:
+        result = subprocess.run(["tmux", *arguments], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def at_empty_prompt(pane, pid):
+    """True when PANE shows the Claude Code of PID, out of copy mode, its cursor at a prompt with nothing typed."""
+    info = tmux("display-message", "-p", "-t", pane, "#{pane_pid}\t#{cursor_x}\t#{cursor_y}\t#{pane_in_mode}")
+    try:
+        pane_pid, x, y, mode = info.rstrip("\n").split("\t")
+        pane_pid, x, y = int(pane_pid), int(x), int(y)
+    except (AttributeError, ValueError):
+        return False
+    if mode != "0" or not descends(pid, pane_pid):
+        return False
+    line = tmux("capture-pane", "-p", "-t", pane, "-S", str(y), "-E", str(y))
+    if line is None:
+        return False
+    text = line.rstrip("\n").replace(chr(0xA0), " ").rstrip()
+    return text in PROMPTS and x == len(text) + 1
+
+
+def type_remote_control(pane):
+    if tmux("send-keys", "-t", pane, "-l", "/remote-control") is None:
+        return False
+    # Text and Enter that arrive together read as a paste, which Claude Code doesn't send.
+    time.sleep(0.5)
+    return tmux("send-keys", "-t", pane, "Enter") is not None
+
+
+def remote_lock(name):
+    STORE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return open(os.open(STORE / name, os.O_WRONLY | os.O_CREAT, 0o600), "w")
+
+
+def command_remote_save(arguments):
+    """Remembers the sessions with Remote Control on, before a switch takes it from them: each with its tmux pane, or
+    none when it runs elsewhere. A session still waiting from a switch before stays."""
+    now = now_ms()
+    with remote_lock(".remote.lock") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        kept = {entry.get("pid"): entry for entry in (load(REMOTE) or {}).get("sessions", []) if isinstance(entry, dict)}
+        for path in SESSIONS.glob("*.json"):
+            session = live_session(path)
+            if session is None or session.get("kind") != "interactive" \
+                    or not isinstance(session.get("bridgeSessionId"), str):
+                continue
+            pane = str(session.get("tmux") or "").rpartition(".")[2] or None
+            kept[session.get("pid")] = {"pid": session.get("pid"), "start": session.get("procStart"), "pane": pane,
+                                        "name": str(session.get("name") or session.get("cwd") or session.get("pid")),
+                                        "since": now, "off": False, "typed": None}
+        write_private(REMOTE, {"sessions": list(kept.values())})
+    return 0
+
+
+def remote_step(entry, now):
+    """Moves one remembered session on. Returns back, lost or gone once it's done with, None while it waits."""
+    session = live_session(SESSIONS / f"{entry.get('pid')}.json")
+    if session is None or session.get("procStart") != entry.get("start"):
+        return "gone"
+    connected = isinstance(session.get("bridgeSessionId"), str)
+    if not entry.get("off"):
+        # Until it dropped Remote Control it's on the account it had: a session that keeps it needs nothing.
+        if not connected:
+            entry["off"] = True
+            return "lost" if not entry.get("pane") else None
+        return "gone" if now - entry.get("since", now) > REMOTE_DROP * 1000 else None
+    if connected:
+        return "back"
+    if entry.get("typed"):
+        return "lost" if now - entry["typed"] > REMOTE_BACK * 1000 else None
+    if now - entry.get("since", now) > REMOTE_WAIT * 1000:
+        return "lost"
+    if session.get("status") == "idle" and at_empty_prompt(entry["pane"], entry.get("pid")) \
+            and type_remote_control(entry["pane"]):
+        entry["typed"] = now_ms()
+    return None
+
+
+def command_remote_restore(arguments):
+    """Brings Remote Control back in the remembered sessions, one step each second until none waits."""
+    with remote_lock(".remote.restore.lock") as running:
         try:
-            stat = pathlib.Path(f"/proc/{int(session.get('pid'))}/stat").read_text()
-        except (OSError, TypeError, ValueError):
-            continue
-        fields = stat.rpartition(")")[2].split()
-        started = session.get("procStart")
-        if started is None or (len(fields) > 19 and fields[19] == str(started)):
-            return 0
-    return 1
+            fcntl.flock(running, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return 1
+        while True:
+            with remote_lock(".remote.lock") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                waiting = []
+                for entry in (load(REMOTE) or {}).get("sessions", []):
+                    if not isinstance(entry, dict):
+                        continue
+                    outcome = remote_step(entry, now_ms())
+                    if outcome is None:
+                        waiting.append(entry)
+                    elif outcome != "gone":
+                        print(f"{outcome}\t{entry.get('name')}", flush=True)
+                if waiting:
+                    write_private(REMOTE, {"sessions": waiting})
+                else:
+                    REMOTE.unlink(missing_ok=True)
+            if not waiting:
+                return 0
+            time.sleep(1)
 
 
 def main(argv):
@@ -584,7 +734,10 @@ def main(argv):
     refuse.add_argument("reason")
     refuse.add_argument("message", nargs="?", default="")
     commands.add_parser("why").add_argument("file")
+    commands.add_parser("remote").add_argument("step", choices=("save", "restore"))
     arguments = parser.parse_args(argv)
+    if arguments.command == "remote":
+        return {"save": command_remote_save, "restore": command_remote_restore}[arguments.step](arguments)
     return {"sessions": command_sessions, "read": command_read, "left": command_left, "best": command_best,
             "refuse": command_refuse, "why": command_why, "first": command_first}[arguments.command](arguments)
 

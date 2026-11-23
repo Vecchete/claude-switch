@@ -118,6 +118,100 @@ class Machine:
             return None
 
 
+def start_of(pid):
+    return pathlib.Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()[19]
+
+
+def remote_checks(m, sessions):
+    """Remote Control after a switch: the sessions that had it get /remote-control typed in their tmux pane once they
+    dropped it and wait idle at an empty prompt, and only those."""
+    fake = m.home.parent / "tmux"
+    fake.mkdir()
+    bin_folder = m.home.parent / "bin"
+    bin_folder.mkdir()
+    (bin_folder / "tmux").write_text((pathlib.Path(__file__).parent / "fake-tmux.py").read_text())
+    (bin_folder / "tmux").chmod(0o755)
+    env = {**m.env, "PATH": f"{bin_folder}:{m.env['PATH']}", "FAKE_TMUX": str(fake), "CLAUDE_SWITCH_REMOTE_DROP": "3",
+           "CLAUDE_SWITCH_REMOTE_BACK": "3", "CLAUDE_SWITCH_REMOTE_WAIT": "8"}
+
+    def run(*arguments, timeout=60):
+        result = subprocess.run([sys.executable, "-I", str(HELPER), "remote", *arguments], env=env,
+                                capture_output=True, text=True, timeout=timeout)
+        return result.returncode, result.stdout
+
+    processes = {name: subprocess.Popen(["sleep", "300"]) for name in
+                 ("idle", "busy", "typing", "elsewhere", "scrolled", "without", "keeps", "other", "stuck", "shell")}
+    empty = chr(0x276F) + chr(0xA0)
+    records, panes = {}, {}
+
+    def session(name, pane=None, bridge="session_old", status="idle", x=2, line=empty, mode="0", reconnects=True,
+                pane_pid=None):
+        process = processes[name]
+        record = {"pid": process.pid, "procStart": start_of(process.pid), "kind": "interactive", "status": status,
+                  "name": name, "bridgeSessionId": bridge}
+        if pane:
+            record["tmux"] = f"claude-{name}:@1.{pane}"
+            panes[pane] = {"pane_pid": pane_pid or process.pid, "x": x, "y": 40, "mode": mode, "line": line,
+                           "record": str(sessions / f"{process.pid}.json"), "reconnects": reconnects}
+        records[name] = sessions / f"{process.pid}.json"
+        records[name].write_text(json.dumps(record))
+
+    def update(name, **fields):
+        record = json.loads(records[name].read_text())
+        record.update(fields)
+        records[name].write_text(json.dumps(record))
+
+    try:
+        session("idle", "%1")
+        session("busy", "%2", status="busy")
+        session("typing", "%3", x=17, line=chr(0x276F) + " fix the tests")
+        session("elsewhere")
+        session("scrolled", "%5", mode="1")
+        session("without", "%6", bridge=None)
+        session("keeps", "%7")
+        session("other", "%8", pane_pid=processes["shell"].pid)
+        session("stuck", "%9", reconnects=False)
+        (fake / "panes.json").write_text(json.dumps(panes))
+        rc, _ = run("save")
+        state = json.loads((m.store / ".remote.json").read_text())
+        check("remote save: the sessions with Remote Control on", rc == 0 and sorted(s["name"] for s in state["sessions"])
+              == ["busy", "elsewhere", "idle", "keeps", "other", "scrolled", "stuck", "typing"])
+        check("remote save: each with its pane", {s["name"]: s["pane"] for s in state["sessions"]}["idle"] == "%1"
+              and {s["name"]: s["pane"] for s in state["sessions"]}["elsewhere"] is None)
+        check("remote save: private", (m.store / ".remote.json").stat().st_mode & 0o777 == 0o600)
+        # Claude Code drops Remote Control within seconds of the switch, but in a session that keeps it.
+        for name in ("idle", "busy", "typing", "elsewhere", "scrolled", "other", "stuck"):
+            update(name, bridgeSessionId=None)
+        restore = subprocess.Popen([sys.executable, "-I", str(HELPER), "remote", "restore"], env=env,
+                                   stdout=subprocess.PIPE, text=True)
+        time.sleep(2.5)
+        rc, _ = run("restore")
+        check("remote restore: one at a time", rc == 1)
+        update("busy", status="idle")
+        out, _ = restore.communicate(timeout=60)
+        outcomes = dict(reversed(line.split("\t")) for line in out.splitlines())
+        check("remote restore: back where it was typed and came back", outcomes.get("idle") == "back"
+              and outcomes.get("busy") == "back")
+        check("remote restore: lost where it can't be typed or didn't come back",
+              all(outcomes.get(name) == "lost" for name in ("typing", "elsewhere", "scrolled", "other", "stuck")))
+        check("remote restore: nothing said of a session that kept it", "keeps" not in outcomes)
+        check("remote restore: a session outside tmux is said first", out.splitlines()[0] == "lost\telsewhere")
+        log = [json.loads(line) for line in (fake / "log").read_text().splitlines()]
+        typed = [(entry["args"][2], entry["args"][3:]) for entry in log if entry["args"][0] == "send-keys"]
+        check("remote restore: /remote-control, then Enter, once in each pane it could",
+              sorted(typed) == sorted([(pane, keys) for pane in ("%1", "%2", "%9")
+                                       for keys in (["-l", "/remote-control"], ["Enter"])]))
+        check("remote restore: only in an idle session",
+              all(entry["status"] == "idle" for entry in log if entry["args"][0] == "send-keys"))
+        check("remote restore: nothing left", not (m.store / ".remote.json").exists())
+    finally:
+        for process in processes.values():
+            process.kill()
+            process.wait()
+        for path in records.values():
+            path.unlink(missing_ok=True)
+
+
 def main():
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Server)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -371,6 +465,9 @@ def main():
         (sessions / "junk.json").write_text("not json")
         rc, _, _ = m.run("sessions")
         check("sessions: a process that ended, a broken file", rc == 1)
+        for path in sessions.glob("*.json"):
+            path.unlink()
+        remote_checks(m, sessions)
 
         # No token ever reaches the output.
         everything = "".join(m.run(*command)[1] + m.run(*command)[2] for command in

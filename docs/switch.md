@@ -58,7 +58,20 @@ the accounts in the prompt (`r`) and use the names.
 
 Running Claude Code sessions read the login again at their next request, so they move to the new
 account without a restart. Remote Control is the exception. Each session registers with the account the
-CLI is on, so a switch disconnects it, and `/remote-control` registers the session with the new account.
+CLI is on, so Claude Code drops it within seconds of a switch to another claude.ai account, and only
+`/remote-control` registers the session with the new account, carrying its conversation over.
+
+claude-switch types it back for you. Before the switch it notes the sessions that have Remote Control on.
+After it, `claude-switch remote` runs in the background and types `/remote-control` in the tmux pane of
+each of them, once Claude Code dropped it there and the session waits idle with nothing typed at its
+prompt. It never types into a busy session, a pane scrolled back in copy mode, a prompt you started
+typing at, or a pane that runs another program, and it types once per session. A notification says when
+Remote Control is back, and under which account. It names the sessions it couldn't bring back within 15
+minutes, and those that don't run in tmux, so you can run `/remote-control` in them yourself.
+
+A phone or another computer shows the sessions once it's signed in to the account the machine moved to:
+claude.ai in Chrome here follows the switch, see [chrome.md](chrome.md), but the Claude app and other
+browsers keep the account they're on.
 
 ## Adding and renewing accounts
 

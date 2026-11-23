@@ -399,5 +399,35 @@ check "read-only settings: automatic switching stays off" '[ ! -e "$STORE/.auto"
 chmod 755 "$HOME/store"
 close_session
 
+# Remote Control after a switch to another claude.ai account: claude-switch remote types /remote-control in the tmux
+# pane of the session that had it, once Claude Code dropped it there and the session waits idle at an empty prompt.
+cp "$HERE/fake-tmux.py" "$T/bin/tmux"
+chmod +x "$T/bin/tmux"
+export FAKE_TMUX=$T/tmux CLAUDE_SWITCH_REMOTE_DROP=10 CLAUDE_SWITCH_REMOTE_BACK=10 CLAUDE_SWITCH_REMOTE_WAIT=20
+mkdir -p "$FAKE_TMUX"
+sleep 300 &
+RC_PID=$!
+RC_RECORD=$HOME/.claude/sessions/$RC_PID.json
+jq -n --argjson pid "$RC_PID" --arg started "$(sed 's/.*) //' "/proc/$RC_PID/stat" | cut -d' ' -f20)" \
+    '{pid: $pid, procStart: $started, kind: "interactive", status: "idle", name: "rc-session",
+      bridgeSessionId: "session_old", tmux: "claude-rc:@1.%1"}' > "$RC_RECORD"
+jq -n --argjson pid "$RC_PID" --arg record "$RC_RECORD" \
+    '{"%1": {pane_pid: $pid, x: 2, y: 40, mode: "0", line: ([10095, 160] | implode), record: $record, reconnects: true}}' \
+    > "$FAKE_TMUX/panes.json"
+"$SCRIPT" ultra > "$T/out" 2>&1
+check "remote: the session with Remote Control is remembered at the switch" \
+    'grep -q "^Switched to ultra" "$T/out" && jq -e ".sessions[] | select(.name == \"rc-session\")" "$STORE/.remote.json"'
+check "remote: the store isn't held while it waits" 'timeout 5 "$SCRIPT" list'
+# Claude Code drops Remote Control within seconds of the switch.
+jq '.bridgeSessionId = null' "$RC_RECORD" > "$T/r" && mv "$T/r" "$RC_RECORD"
+for _ in $(seq 100); do grep -q "Remote Control is back" "$T/notify" 2>/dev/null && break; sleep 0.2; done
+check "remote: /remote-control typed in its pane, then Enter" \
+    '[ "$(jq -c "select(.args[0] == \"send-keys\") | .args" "$FAKE_TMUX/log" | tr "\n" " ")" \
+    = "[\"send-keys\",\"-t\",\"%1\",\"-l\",\"/remote-control\"] [\"send-keys\",\"-t\",\"%1\",\"Enter\"] " ]'
+check "remote: says it's back, and under which account" 'grep -q "Remote Control is back In 1 session, under ultra: " "$T/notify"'
+"$SCRIPT" rename ultra remote > "$T/out" 2>&1; rc=$?
+check "remote is no name" '[ "$rc" -ne 0 ] && grep -q "remote is a command of this script" "$T/out"'
+kill "$RC_PID" 2>/dev/null
+
 printf '%d passed, %d failed\n' "$passes" "$fails"
 [ "$fails" -eq 0 ]
