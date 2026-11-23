@@ -104,6 +104,9 @@ try {
     $login = Complete 'claude-switch login '
     Check 'login: the claude.ai accounts only' (($login -contains 'lucas@example.com') -and -not ($login -contains 'gw'))
     Check 'rename: every account, the keys too' ((Complete 'claude-switch rename ') -contains 'gw')
+    Check 'first word: delete' ((Complete 'claude-switch ') -contains 'delete')
+    Check 'delete: every account, the keys too' (((Complete 'claude-switch delete ') -contains 'gw') -and
+        ((Complete 'claude-switch delete ') -contains 'other@example.net'))
     Check 'key: import, add, renew and remove' (((Complete 'claude-switch key ') -join ',') -eq 'import,add,renew,remove')
     Check 'key remove: the gateway keys only' (((Complete 'claude-switch key remove ') -join ',') -eq 'gw')
     Check 'key renew: the gateway keys only' (((Complete 'claude-switch key renew ') -join ',') -eq 'gw')

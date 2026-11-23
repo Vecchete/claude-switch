@@ -77,6 +77,11 @@ SWITCHED = STORE / ".switched"
 WOKEN = STORE / ".woken"
 # What the automatic switches did and what claude-switch said meanwhile: a hook's stderr goes to Claude.
 AUTO_LOG = STORE / ".auto.log"
+# What the helpers keep of each claude.ai account, by its accountUuid: its session of claude.ai in Chrome, and its
+# sign-in of Desktop with, on Windows, the storage of Desktop's window beside it.
+WEB_SAVED = STORE / ".web"
+DESKTOP_SAVED = STORE / ".desktop"
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # What runs the watch: its systemd timer elsewhere, the scheduled task install.ps1 registers on Windows.
 WATCH_TIMER = "claude-switch-watch.timer"
 WATCH_TASK = "claude-switch-watch"
@@ -97,7 +102,7 @@ CACHES = ("managedSettingsNoticeSeenOrg", "additionalModelOptionsCache", "additi
           "autoCompactWindowsCache", "cachedUsageUtilization", "metricsStatusCache", "metricsStatusCacheByPrincipal",
           "githubWebConnectionStatusCache", "unusedLimitResetStatusCache", "startupPrefetchedAt")
 
-COMMANDS = ("list", "login", "key", "rename", "refresh", "help", "auto", "watch", "hook")
+COMMANDS = ("list", "login", "key", "rename", "delete", "refresh", "help", "auto", "watch", "hook")
 
 # A gateway key account is the set of these entries in the env of ~/.claude/settings.json: a token there goes before the
 # claude.ai login, and the model names and the URL belong to the gateway. A switch replaces all of them, the other
@@ -175,6 +180,10 @@ Usage:
   claude-switch key remove NAME          Forget the gateway key NAME, and take it out of
                                          ~/.claude/settings.json when it is active.
   claude-switch rename NAME NEW_NAME     Rename an account.
+  claude-switch delete NAME              Delete the account NAME: a gateway key as key remove does, a
+                                         claude.ai account with its login saved here and its saved
+                                         sessions of claude.ai in Chrome and of Desktop. Not the account
+                                         Claude Code is on.
   claude-switch refresh [--force]        Refresh the login of the accounts that are not active.
                                          The claude-switch-refresh task runs it at logon and every
                                          4 hours. --force refreshes them even when not due.
@@ -216,8 +225,7 @@ The credit an Anthropic API key has left is not readable: no API gives it out, a
 of the Claude Console shows it.
 
 Don't use /logout on an account you want to keep: it revokes the login saved here too.
-To forget an account, remove its file in ~/.claude-accounts, or a gateway key with claude-switch key
-remove NAME.
+To forget an account, delete it with claude-switch delete NAME, or with d in the prompt.
 """
 
 
@@ -903,15 +911,52 @@ def key_remove(who):
     login."""
     file = require_account(who)
     if not is_key(file):
-        die(f"{who} is a claude.ai account. To forget it, remove ~/.claude-accounts/{file.name}")
+        die(f"{who} is a claude.ai account. To forget it: claude-switch delete {quote(who)}")
     account = read_account(file)
-    if live_key()[1] == file:
-        set_key_env()
-        file.unlink(missing_ok=True)
+    if forget_key(file):
         print(f"Removed the gateway key {account.label}, and emptied its entries in ~/.claude/settings.json.")
     else:
-        file.unlink(missing_ok=True)
         print(f"Removed the gateway key {account.label}.")
+
+
+def forget_key(file):
+    """Removes the key account FILE, True when it was the active key, whose entries go out of settings.json first."""
+    active = live_key()[1] == file
+    if active:
+        set_key_env()
+    file.unlink(missing_ok=True)
+    return active
+
+
+def delete_account(file):
+    """Deletes the account FILE with what automatic switching read of it and a hold on it: a gateway key as key remove
+    does, a claude.ai account with its saved sessions of claude.ai in Chrome and of Desktop, unless another account kept
+    here is the same login in another organization. The login in ~/.claude can't go, even under an active key: the next
+    run would keep it again."""
+    account = read_account(file)
+    held = held_file() == file
+    if is_key(file):
+        emptied = forget_key(file)
+    else:
+        if file == live_file():
+            die(f"{account.label} is the account Claude Code is on: switch to another one before you delete it.")
+        emptied = False
+        file.unlink(missing_ok=True)
+        uuid = dig(account.data, "oauthAccount", "accountUuid")
+        # An account file that can't be read may be the same login: its saved sessions stay then.
+        kept = [load_or_none(other) for other in accounts()]
+        if isinstance(uuid, str) and UUID.fullmatch(uuid) \
+                and not any(not isinstance(data, dict) or dig(data, "oauthAccount", "accountUuid") == uuid for data in kept):
+            for path in (WEB_SAVED / f"{uuid}.json", DESKTOP_SAVED / f"{uuid}.json"):
+                path.unlink(missing_ok=True)
+            for suffix in (".web", ".web.tmp", ".web.old"):
+                shutil.rmtree(DESKTOP_SAVED / f"{uuid}{suffix}", ignore_errors=True)
+    for suffix in (".json", ".refused.json"):
+        (STORE / ".usage" / f"{file.stem}{suffix}").unlink(missing_ok=True)
+    if held:
+        HOLD.unlink(missing_ok=True)
+    print(f"Deleted {account.label}, and emptied its entries in ~/.claude/settings.json." if emptied
+          else f"Deleted {account.label}.")
 
 
 def cmd_key(arguments):
@@ -2221,6 +2266,36 @@ def prompt_rename(files):
         unlock_store()
 
 
+def prompt_delete(files):
+    """Asks which account to delete, then whether to, no by default. A refusal ends the deletion, not the prompt."""
+    if not files:
+        print("There is no account to delete.")
+        return
+    row = "1"
+    try:
+        if len(files) > 1:
+            row = input("Delete which one (number)? ")
+            if not row:
+                return
+            if not is_row(row, len(files)):
+                print(f"There is no account {row}.")
+                return
+        file = files[int(row) - 1]
+        answer = input(f"Delete {read_account(file).label}? [y/N] ")
+    except EOFError:
+        return
+    if answer.strip() not in ("y", "Y", "yes", "Yes", "YES"):
+        return
+    try:
+        lock_store()
+        delete_account(file)
+    except SystemExit as error:
+        if error.code == 143:
+            raise
+    finally:
+        unlock_store()
+
+
 def prompt_add():
     """Asks whether the new account is a subscription or a key, and whether the machine goes to it once it's in, then
     signs it in or keeps the key. Each runs as a claude-switch of its own, so a refusal ends that run and not the
@@ -2277,7 +2352,7 @@ def cmd_prompt():
         if live is not None:
             remind_overrides(live)
         remind_signins()
-        print("\n   a) Add an account\n   r) Rename an account\n   q) Quit\n")
+        print("\n   a) Add an account\n   r) Rename an account\n   d) Delete an account\n   q) Quit\n")
         try:
             choice = input("Select an account to switch to: ")
         except EOFError:
@@ -2289,13 +2364,15 @@ def cmd_prompt():
             prompt_add()
         elif choice in ("r", "R"):
             prompt_rename(files)
+        elif choice in ("d", "D"):
+            prompt_delete(files)
         elif is_row(choice, len(files)):
             lock_store()
             switch_to(files[int(choice) - 1])
             hold_account(files[int(choice) - 1])
             return
         else:
-            print("Type a number from the list, a, r or q.")
+            print("Type a number from the list, a, r, d or q.")
 
 
 def main(arguments):
@@ -2349,6 +2426,10 @@ def main(arguments):
         if len(arguments) != 3:
             die("Usage: claude-switch rename NAME NEW_NAME")
         rename_account(require_account(arguments[1]), arguments[2])
+    elif first == "delete":
+        if len(arguments) != 2:
+            die("Usage: claude-switch delete NAME")
+        delete_account(require_account(arguments[1]))
     elif first == "auto":
         cmd_auto(arguments[1:])
     elif first == "watch":

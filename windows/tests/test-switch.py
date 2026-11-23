@@ -284,6 +284,62 @@ try:
         check("Remote Control: only the server outside Desktop", lines[:1] == ["[11]"])
         check("Remote Control, no terminal: left alone", "stays on the account it started on" in result.stdout
               and lines[-1:] == ['["powershell.exe", "powershell.exe"]'])
+
+    # delete: a claude.ai account goes with its readings, a hold on it, and its saved sessions of Chrome and Desktop.
+    uuid_d = "dddddddd-0000-4000-8000-0000000000d1"
+    run("login", FAKE_EMAIL="d@example.com", FAKE_TOKEN="D", FAKE_ACCOUNT=uuid_d, FAKE_ORG="org-d-0000")
+    file_d = account("d@example.com")
+    saved = [store / ".web" / f"{uuid_d}.json", store / ".desktop" / f"{uuid_d}.json",
+             store / ".desktop" / f"{uuid_d}.web" / "Local Storage" / "leveldb" / "000003.log"]
+    for path in saved + [store / ".usage" / f"{file_d.stem}.json", store / ".usage" / f"{file_d.stem}.refused.json"]:
+        write(path, {"kept": True})
+    write(store / ".hold", f"{file_d.name}\n")
+    result = run("delete", "d@example.com")
+    check("delete: the account goes", result.returncode == 0 and not file_d.exists()
+          and "Deleted d@example.com." in result.stdout)
+    check("delete: its saved sessions of Chrome and Desktop go", not any(path.exists() for path in saved)
+          and not (store / ".desktop" / f"{uuid_d}.web").exists())
+    check("delete: what automatic switching read of it goes, and the hold on it",
+          not (store / ".usage" / f"{file_d.stem}.json").exists()
+          and not (store / ".usage" / f"{file_d.stem}.refused.json").exists() and not (store / ".hold").exists())
+    # One login kept twice, in two organizations: its saved sessions stay while the other one is kept.
+    uuid_e = "eeeeeeee-0000-4000-8000-0000000000e1"
+    for org in ("e1", "e2"):
+        write(store / f"e@example.com_org-{org}-00.json",
+              {"name": f"e-{org}", "login": {"claudeAiOauth": {"accessToken": "E-access", "refreshToken": "E-refresh",
+                                                              "expiresAt": FAR, "refreshTokenExpiresAt": FAR}},
+               "oauthAccount": {"emailAddress": "e@example.com", "accountUuid": uuid_e,
+                                "organizationUuid": f"org-{org}-0000"}})
+    write(store / ".web" / f"{uuid_e}.json", {"kept": True})
+    run("delete", "e-e1")
+    check("delete one of a login kept twice: its saved sessions stay",
+          not (store / "e@example.com_org-e1-00.json").exists() and (store / ".web" / f"{uuid_e}.json").exists())
+    run("delete", "e-e2")
+    check("delete the last of them: its saved sessions go", not (store / ".web" / f"{uuid_e}.json").exists())
+    # An account file that can't be read may be the same login: the saved sessions stay.
+    uuid_f = "ffffffff-0000-4000-8000-0000000000f1"
+    for name, uuid in (("f", uuid_f), ("g", "../../x")):
+        write(store / f"{name}@example.com_org-{name}-00.json",
+              {"name": name, "login": {"claudeAiOauth": {"accessToken": "F-access", "refreshToken": "F-refresh",
+                                                         "expiresAt": FAR, "refreshTokenExpiresAt": FAR}},
+               "oauthAccount": {"emailAddress": f"{name}@example.com", "accountUuid": uuid,
+                                "organizationUuid": f"org-{name}-0000"}})
+    write(store / ".web" / f"{uuid_f}.json", {"kept": True})
+    broken = store / "broken@example.com_org-x-00.json"
+    broken.write_text("{", encoding="utf-8")
+    run("delete", "f")
+    check("delete beside an account file that can't be read: the saved sessions stay",
+          not (store / "f@example.com_org-f-00.json").exists() and (store / ".web" / f"{uuid_f}.json").exists())
+    broken.unlink()
+    # An accountUuid that isn't one names no path to remove.
+    write(home / "x.json", {"kept": True})
+    run("delete", "g")
+    check("delete an account whose accountUuid isn't one: nothing outside the store goes",
+          not (store / "g@example.com_org-g-00.json").exists() and (home / "x.json").exists())
+    result = run("delete", "c@example.com")
+    check("delete the login in place: refused", result.returncode == 1 and (store / "c@example.com_org-c-00.json").exists()
+          and "c@example.com is the account Claude Code is on: switch to another one before you delete it."
+          in result.stderr)
 finally:
     shutil.rmtree(root, ignore_errors=True)
 

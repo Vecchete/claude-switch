@@ -355,8 +355,24 @@ try:
     check("remove the active key: emptied in settings",
           emptied("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_DEFAULT_SONNET_MODEL"))
     check("remove the active key: the login is active", marked("a@example.com"))
-    run("key", "remove", "b@example.com")
+    result = run("key", "remove", "b@example.com")
     check("remove a claude.ai account: refused", (P.store / "b@example.com_org-of-b.json").is_file())
+    check("remove a claude.ai account: says how to delete it", "claude-switch delete b@example.com" in out(result))
+
+    # Deleting an account: a key as key remove does, the active one included, with what automatic switching read of it.
+    fresh("delete")
+    write(P.store / ".usage" / "key_gw2.json", {"at": 1})
+    result = run("delete", "gw2")
+    check("delete a key: gone, with its reading", result.returncode == 0 and not key("gw2").exists()
+          and not (P.store / ".usage" / "key_gw2.json").exists() and "Deleted gw2." in result.stdout)
+    result = run("delete", "gw1")
+    check("delete the active key: its entries emptied in settings", not key("gw1").exists()
+          and emptied("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL")
+          and "Deleted gw1, and emptied its entries in ~/.claude/settings.json." in result.stdout)
+    check("delete the active key: the login is active", marked("a@example.com"))
+    check("delete is a reserved name", "delete is a command of this script" in out(run("rename", "b@example.com",
+                                                                                       "delete")))
+    check("delete with no name: the usage", "Usage: claude-switch delete NAME" in out(run("delete")))
     fresh("removed-by-hand")
     key("gw1").unlink()
     result = run("b@example.com")
@@ -580,7 +596,7 @@ try:
         "module = importlib.util.module_from_spec(spec)\n"
         "spec.loader.exec_module(module)\n"
         "answers = iter(json.loads(sys.argv[2]) + ['q'])\n"
-        "builtins.input = lambda question='': next(answers)\n"
+        "builtins.input = lambda question='': print('ASK', question, flush=True) or next(answers)\n"
         "real = module.run\n"
         "def run(command):\n"
         "    print('RUN', *command[3:], flush=True)\n"
@@ -648,6 +664,27 @@ try:
                               capture_output=True, text=True, encoding="utf-8", timeout=60))
     check("the key is asked where it shows as it's typed or pasted", "ASK Gateway key for gw9: " in text
           and "TOKEN True" in text)
+
+    # d deletes an account: which one, then whether to, no by default.
+    fresh("prompt-delete")
+
+    def row_of(path):
+        return str(sorted(file for file in P.store.glob("*.json") if not file.name.startswith(".")).index(path) + 1)
+
+    text = answered("d", row_of(key("gw2")), "")
+    check("d: asks which one, then whether to, no by default", "ASK Delete which one (number)? " in text
+          and "ASK Delete gw2? [y/N] " in text and key("gw2").is_file())
+    text = answered("d", row_of(key("gw2")), "y")
+    check("d and yes: deleted", not key("gw2").exists() and "Deleted gw2." in text)
+    live = P.store / "a@example.com_org-of-a.json"
+    text = answered("d", row_of(live), "y")
+    check("d on the login in place, under a key: refused, the prompt goes on", live.is_file()
+          and "a@example.com is the account Claude Code is on: switch to another one before you delete it." in text
+          and text.count("Claude Code accounts") == 2)
+    check("d with a row that isn't there: said", "There is no account 9." in answered("d", "9"))
+    use("no-account")
+    P.home.mkdir(parents=True)
+    check("d with no account: said", "There is no account to delete." in answered("d"))
 
     # What only Windows does to the keys, checked on Linux as well where it means the same.
     # Windows PowerShell can put a BOM before what it pipes into a program.

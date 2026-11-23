@@ -5,7 +5,7 @@ few things were never run there for real yet, see [Status](#status) and
 [Not verified yet](#not-verified-yet).
 
 The port follows `bin/claude-switch`, `share/chrome-host.py`, `share/desktop.py` and `share/usage.py` as of
-commit 06f3cb0, [gateway keys](../docs/gateway-keys.md) and [automatic switching](../docs/auto.md) included. When the Linux version changes, the port changes with it:
+commit 301e3aa, [gateway keys](../docs/gateway-keys.md) and [automatic switching](../docs/auto.md) included. When the Linux version changes, the port changes with it:
 `windows/tests/run.sh` says on Linux whether it still behaves the same, and `windows\tests\run.ps1` checks
 on Windows what only Windows does.
 
@@ -56,7 +56,8 @@ settings Claude Desktop keeps per account, which go over to the next account.
    [Gateway keys](../docs/gateway-keys.md). In the prompt, `a` asks for the kind of account first: `s` signs
    in a subscription, and `k` keeps an API key or a gateway key. It asks for a name, the URL of the gateway
    (Enter for the Anthropic API) and then the key, which shows as you paste it. Last it asks whether to
-   switch to the new account once it's added, no by default. `claude-switch help` has the rest.
+   switch to the new account once it's added, no by default. `d` deletes an account, after a question
+   that says no by default. `claude-switch help` has the rest.
 
 ## Where things are
 
@@ -188,40 +189,41 @@ PowerShell does what only PowerShell does: the install, the Tab completion and t
 
 ## Tests
 
-On Linux (Ubuntu 24.04, Python 3.12, PowerShell 7.6.9), on 2026-11-02, `windows/tests/run.sh` ran the
-suites of the Linux version against the port:
+On Linux (Ubuntu 24.04, with `jq`), on 2026-11-21, `windows/tests/run.sh` ran the suites of the Linux
+version of commit 301e3aa against the port, with what only Linux does in place of what only Windows does:
 
 | Suite | Run against | Checks |
 |---|---|---|
-| `tests/test-switch.sh` | `claude-switch.py` | 75 passed |
+| `tests/test-switch.sh` | `claude-switch.py` | 101 passed |
 | `tests/test-refresh.sh` | `claude-switch.py` | 85 passed |
-| `tests/test-switch-desktop.sh` | `claude-switch.py` | 15 passed |
+| `tests/test-keys.sh` | `claude-switch.py` | 153 passed |
+| `tests/test-usage.py` | `usage.py` | 73 passed |
+| `tests/test-auto.sh` | `claude-switch.py` and `usage.py` | 101 passed |
+| `tests/test-switch-desktop.sh` | `claude-switch.py` | 17 passed |
 | `tests/test-switch-chrome.py` | `claude-switch.py` and `chrome-host.py` | 11 passed |
-| `tests/test-chrome-host.py` | `chrome-host.py` | 55 passed |
-| `tests/test-desktop.py` | `desktop.py` | 51 passed |
+| `tests/test-chrome-host.py` | `chrome-host.py` | 57 passed |
+| `tests/test-desktop.py` | `desktop.py` | 60 passed |
+| `windows/tests/test-switch.py` | `claude-switch.py` | 51 passed |
+| `windows/tests/test-keys.py` | `claude-switch.py` | 161 passed |
+| `windows/tests/test-auto.py` | `claude-switch.py` and `usage.py` | 100 passed |
 
-Those runs came before the gateway keys and automatic switching. `windows/tests/run.sh` now runs
-`tests/test-keys.sh`, `tests/test-usage.py` and `tests/test-auto.sh` against the port too. The shell suites
-need `jq` and the Linux `claude`, so they haven't run yet. On 2026-11-20, on Linux in WSL (Ubuntu 26.04,
-Python 3.14.4), the Python suites passed: `windows/tests/test-switch.py` 43 checks,
-`windows/tests/test-keys.py` 149 and `windows/tests/test-auto.py` 99, with what only Linux does in place of
-what only Windows does, and against the files of the port `tests/test-usage.py` 68, `tests/test-desktop.py`
-60, `tests/test-chrome-host.py` 55 and `tests/test-switch-chrome.py` 11.
+That machine had no `pwsh`, so `test-powershell.ps1` ran on Windows only. In WSL on the test machine
+(Ubuntu 26.04, Python 3.14.4), which has no `jq`, the Python suites passed with the same counts.
 
-On Windows 11 Pro 26300, with Python 3.14.3 and Windows PowerShell 5.1, on 2026-11-20,
+On Windows 11 Pro 26300, with Python 3.14.3 and Windows PowerShell 5.1, on 2026-11-21,
 `windows\tests\run.ps1` ran:
 
 | Suite | Run against | Checks |
 |---|---|---|
-| `windows/tests/test-switch.py` | `claude-switch.py` | 48 passed |
-| `windows/tests/test-keys.py` | `claude-switch.py` | 150 passed |
-| `windows/tests/test-auto.py` | `claude-switch.py` and `usage.py` | 100 passed |
+| `windows/tests/test-switch.py` | `claude-switch.py` | 56 passed |
+| `windows/tests/test-keys.py` | `claude-switch.py` | 162 passed |
+| `windows/tests/test-auto.py` | `claude-switch.py` and `usage.py` | 101 passed |
 | `windows/tests/test-desktop.py` | `desktop.py` and `localstorage.py` | 88 passed |
 | `windows/tests/test-chrome.py` | `claude-switch.py` and `chrome-host.py` | 16 passed |
-| `windows/tests/test-powershell.ps1` | `install.ps1`, `completion.ps1`, `notify.ps1`, `tests/run.ps1` | 46 passed |
+| `windows/tests/test-powershell.ps1` | `install.ps1`, `completion.ps1`, `notify.ps1`, `tests/run.ps1` | 48 passed |
 
 `windows/tests/mutants.py` breaks the Windows guards, those of the gateway keys, those of automatic switching
-and those of their Tab completion one at a time, in a copy: 154 of 154 killed. Eight runs of `test-keys.py` at once, the load of
+and those of their Tab completion one at a time, in a copy: 188 of 188 killed. Eight runs of `test-keys.py` at once, the load of
 `mutants.py -j 8`, all passed, so no mutant was killed by a check that fails under load.
 
 `test-desktop.py` writes and reads the Local Storage of Desktop with its own code, after the formats of

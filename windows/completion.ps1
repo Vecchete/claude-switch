@@ -50,13 +50,13 @@ Register-ArgumentCompleter -Native -CommandName 'claude-switch', 'claude-switch.
         if ($typed.StartsWith('-')) {
             $candidates = '-h', '--help'
         } else {
-            $candidates = @('list', 'login', 'key', 'rename', 'refresh', 'auto', 'help') + @(& $accounts)
+            $candidates = @('list', 'login', 'key', 'rename', 'delete', 'refresh', 'auto', 'help') + @(& $accounts)
         }
     } elseif ($before.Count -eq 2) {
         $command = $before[1].Extent.Text
         if ($command -eq 'login') {
             $candidates = @(& $accounts 'logins')
-        } elseif ($command -eq 'rename') {
+        } elseif ($command -eq 'rename' -or $command -eq 'delete') {
             $candidates = @(& $accounts)
         } elseif ($command -eq 'key') {
             $candidates = 'import', 'add', 'renew', 'remove'
