@@ -25,7 +25,9 @@ Never paste the content of `~/.claude-accounts`, `~/.claude/.credentials.json` o
 | `share/chrome-extension/` | The Chrome extension the host works through |
 | `share/desktop.py` | Puts Claude Desktop on the account of a switch |
 | `share/completion.bash` | The bash completion |
-| `systemd/` | The timer and the service of the background refresh |
+| `share/usage.py` | What each account has left, the best account, and Remote Control after a switch |
+| `share/remote-keys.py` | The service of root that presses the Remote Control key outside tmux |
+| `systemd/` | The timers and services of the background refresh and the watch, and in `system/` the socket and the service of root |
 | `install.sh` | Copies everything to where it runs from |
 | `tests/` | The suites and the mutants, see [docs/testing.md](docs/testing.md) |
 | `docs/` | How each part works |

@@ -61,23 +61,58 @@ account without a restart. Remote Control is the exception. Each session registe
 CLI is on, so Claude Code drops it within seconds of a switch to another claude.ai account, and only
 `/remote-control` registers the session with the new account, carrying its conversation over.
 
-claude-switch types it back for you. Before the switch it notes the sessions that have Remote Control on.
-After it, `claude-switch remote` runs in the background and types `/remote-control` in the tmux pane of
-each of them, once Claude Code dropped it there and the session waits idle with nothing typed at its
-prompt. It never types into a busy session, a pane scrolled back in copy mode, a prompt you started
-typing at, or a pane that runs another program, and it types once per session. A notification says when
-Remote Control is back, and under which account. It names the sessions it couldn't bring back within 15
-minutes, and those that don't run in tmux, so you can run `/remote-control` in them yourself.
+claude-switch runs it again for you. Before the switch it notes the sessions that have Remote Control on,
+and binds `Ctrl+X Ctrl+Q` to `/remote-control` in `~/.claude/keybindings.json`, beside your own bindings.
+Claude Code reads that file again by itself, in the sessions already open too. The key runs the command
+at the prompt and leaves what you typed there as it is, and it does nothing in a dialog. After the switch,
+`claude-switch remote` runs in the background and presses it in each of those sessions, once Claude Code
+dropped Remote Control there and the session waits idle:
 
-Nothing can type in a session that runs outside tmux: in another terminal, in VS Code or in Desktop. So
-while one of those has Remote Control on, [automatic switching](auto.md) doesn't go to a better claude.ai
-account as long as the account in use has room. It stays, says so in a notification once a day and in
-`claude-switch auto`, and moves on once those sessions end or the account in use runs out. A switch you
-type, one a limit forces, and one to a key still go.
+- In tmux, it presses the key in the pane of the session, at its prompt. It never presses in a busy
+  session, a pane scrolled back in copy mode, or a pane that runs another program.
+- Outside tmux, in another terminal, over SSH or in the terminal of VS Code, only root can press a key.
+  The [claude-switch-remote service](#the-claude-switch-remote-service) does it, once you install it.
+
+When the key didn't take, a dialog was open for instance, it tries again a little later, 3 times in all.
+A notification says when Remote Control is back, and under which account. It names the sessions it
+couldn't bring back, so you can run `/remote-control` in them yourself: one where the key never took, one
+that stayed busy for 15 minutes, and one nothing can reach, a session of Desktop or of an IDE, or one
+outside tmux without the service.
+
+When a binding of yours takes `Ctrl+X`, `Ctrl+Q` or that chord, or `keybindings.json` is a file Claude
+Code can't read, claude-switch leaves the file alone. It then types `/remote-control` in tmux at an empty
+prompt only, and nothing reaches the sessions outside tmux.
+
+While a session nothing can reach has Remote Control on, [automatic switching](auto.md) doesn't go to a
+better claude.ai account as long as the account in use has room. It stays, says so in a notification once
+a day and in `claude-switch auto`, and moves on once those sessions end or the account in use runs out. A
+switch you type, one a limit forces, and one to a key still go.
 
 A phone or another computer shows the sessions once it's signed in to the account the machine moved to:
 claude.ai in Chrome here follows the switch, see [chrome.md](chrome.md), but the Claude app and other
 browsers keep the account they're on.
+
+### The claude-switch-remote service
+
+On Linux, putting a key in a terminal that isn't your own takes root: the `TIOCSTI` call needs
+`CAP_SYS_ADMIN`. The `dev.tty.legacy_tiocsti` setting doesn't help, as it only ever lets a program type in
+its own terminal. The claude-switch-remote service does it for claude-switch, and nothing else. It's
+optional, and root installs it from the checkout:
+
+```bash
+sudo ./install.sh --root          # install or update it
+sudo ./install.sh --remove-root   # take it out
+```
+
+It's a socket of systemd, `/run/claude-switch-remote.sock`, which starts the service for each request.
+Any user may ask, and only for a session of their own. It presses `Ctrl+X` then `Ctrl+Q`, never anything
+else, and only in a Claude Code session of the user who asks, in the foreground of a terminal of that
+user that waits for keys, and only when no program of another user runs on that terminal.
+[SECURITY.md](../SECURITY.md) lists every check. What it pressed and what it refused goes to the journal:
+
+```bash
+journalctl -u 'claude-switch-remote@*'
+```
 
 ## Adding and renewing accounts
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs every suite against the files of this checkout, never against the installed ones.
 # Usage: tests/run.sh [SUITE...], where SUITE is switch, refresh, keys, usage, auto, chrome-host, switch-chrome,
-# worker, desktop, switch-desktop, completion or install.
+# worker, desktop, switch-desktop, completion, install or remote-keys.
 set -u
 TESTS=$(dirname "$(readlink -f "$0")")
 ROOT=$(dirname "$TESTS")
@@ -21,7 +21,7 @@ run() {
 PASSED=()
 FAILED=()
 [ $# -gt 0 ] || set -- switch refresh keys usage auto chrome-host switch-chrome worker desktop switch-desktop completion \
-    install
+    install remote-keys
 for suite in "$@"; do
     case $suite in
         switch) run switch "$TESTS/test-switch.sh" "$ROOT/bin/claude-switch" ;;
@@ -37,6 +37,7 @@ for suite in "$@"; do
         switch-desktop) run switch-desktop "$TESTS/test-switch-desktop.sh" "$ROOT/bin/claude-switch" ;;
         completion) run completion "$TESTS/test-completion.sh" "$ROOT/share/completion.bash" ;;
         install) run install "$TESTS/test-install.sh" "$ROOT/install.sh" ;;
+        remote-keys) run remote-keys python3 -I "$TESTS/test-remote-keys.py" "$ROOT/share/remote-keys.py" ;;
         *) printf 'No suite called %s.\n' "$suite" >&2; exit 2 ;;
     esac
 done

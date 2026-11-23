@@ -193,10 +193,12 @@ Adding an account doesn't switch to it, unless with --switch. With automatic swi
 account ranks with the others: added without --switch, the machine goes to it at once when it comes
 first, and added with --switch, the next check moves the machine on when another account comes first.
 
-A switch to another claude.ai account takes Remote Control from the sessions. claude-switch types
-/remote-control back in the tmux pane of each, once it waits idle at an empty prompt, and names the
-sessions it can't bring back. While one outside tmux has Remote Control on, automatic switching doesn't
-go to a better claude.ai account, only away from one that runs out.
+A switch to another claude.ai account takes Remote Control from the sessions. claude-switch brings it
+back in each once it waits idle: it presses Ctrl+X Ctrl+Q, which it binds to /remote-control in
+~/.claude/keybindings.json, in the tmux pane of the session, or has the claude-switch-remote service
+press it outside tmux. That service runs as root, and sudo ./install.sh --root installs it.
+claude-switch names the sessions it can't bring back. While one it can't reach has Remote Control on,
+automatic switching doesn't go to a better claude.ai account, only away from one that runs out.
 
 The credit an Anthropic API key has left is not readable: no API gives it out, and the Billing page of
 the Claude Console shows it.
@@ -956,8 +958,8 @@ remote_follow() {
     setsid -f "${command[@]}" </dev/null >/dev/null 2>&1 9>&- || true
 }
 
-# Types /remote-control in the tmux pane of each session remote_save remembered, once it dropped Remote Control and
-# waits idle at an empty prompt, then says where it's back and where it isn't.
+# Runs /remote-control in each session remote_save remembered, once it dropped Remote Control and waits idle, then
+# says where it's back and where it isn't.
 cmd_remote() {
     local outcome name back=0 lost=() names
     [ $# -eq 0 ] || die "Usage: claude-switch remote"
@@ -1507,7 +1509,8 @@ auto_status() {
         read_account "$best"
         printf 'The best account with room now is %s.\n' "$LABEL"
         if [ "$best" != "$active" ] && waiting=$(remote_holds "$best" "$active"); then
-            printf 'It waits to go there while Remote Control runs outside tmux in %s.\n' "$waiting"
+            printf 'It waits to go there while Remote Control is on in %s, where a switch would take it for good.\n' \
+                "$waiting"
         fi
     else
         printf 'No account has room now.\n'
@@ -1521,8 +1524,9 @@ nothing_left() {
     notify_once "nothing" "No Claude account has room" "${first:+The first to have room again: $first.}"
 }
 
-# Names the sessions a move from ACTIVE to BEST would take Remote Control from for good, the ones outside tmux, when
-# BEST is another claude.ai account and ACTIVE still has room, so the move isn't needed. Fails when there are none.
+# Names the sessions a move from ACTIVE to BEST would take Remote Control from for good, the ones nothing can reach:
+# outside tmux, without the claude-switch-remote service. Only when BEST is another claude.ai account and ACTIVE still
+# has room, so the move isn't needed. Fails when there are none.
 # BEST ACTIVE
 remote_holds() {
     local names
@@ -1553,12 +1557,13 @@ route() {
     # A hold ends with its account's room.
     [ -z "$hold" ] || [ "$best" = "$hold" ] || rm -f "$HOLD"
     [ "$best" != "$active" ] || return 0
-    # Remote Control outside tmux goes for good with the account: the better account waits for those sessions.
+    # Remote Control where nothing can bring it back goes for good with the account: the better account waits for
+    # those sessions.
     if ROUTED_HELD=$(remote_holds "$best" "$active"); then
         read_account "$best"
         why=$LABEL
         read_account "$active"
-        notify_once "remote-held" "It stays on $LABEL" "Remote Control runs outside tmux in $ROUTED_HELD, and a switch to $why would take it from them for good. It moves on once they end, or once $LABEL runs out."
+        notify_once "remote-held" "It stays on $LABEL" "Remote Control is on in $ROUTED_HELD, where claude-switch can't bring it back after a switch to $why. It moves on once they end, or once $LABEL runs out."
         return 0
     fi
     read_account "$best"
@@ -1587,7 +1592,7 @@ route_and_say() {
     elif [ -z "$ROUTED_TO" ] && active=$(active_file); then
         read_account "$active"
         if [ -n "$ROUTED_HELD" ]; then
-            printf 'It stays on %s while Remote Control runs outside tmux in %s: a switch would take it from them.\n' \
+            printf 'It stays on %s while Remote Control is on in %s, where a switch would take it for good.\n' \
                 "$LABEL" "$ROUTED_HELD"
         elif [ -f "$HOLD" ] && [ "$STORE/$(head -n 1 "$HOLD")" = "$active" ]; then
             printf 'It stays on %s, chosen by hand, until it runs out.\n' "$LABEL"

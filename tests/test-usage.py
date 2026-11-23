@@ -6,6 +6,8 @@ import http.server
 import json
 import os
 import pathlib
+import pty
+import socketserver
 import subprocess
 import sys
 import tempfile
@@ -122,38 +124,83 @@ def start_of(pid):
     return pathlib.Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()[19]
 
 
+class RootService(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    """Stands in for the claude-switch-remote service: it logs each request with when it came and the status the
+    session had then. It presses for the sessions of RECONNECTS, which turns their Remote Control on, as the key does,
+    and refuses the others, as for a session that isn't the foreground of its terminal."""
+    daemon_threads = True
+
+    def __init__(self, path, sessions):
+        self.sessions = sessions
+        self.requests = []
+        self.reconnects = set()
+        super().__init__(str(path), RootRequest)
+
+
+class RootRequest(socketserver.StreamRequestHandler):
+    def handle(self):
+        pid, start = self.rfile.readline().decode().split()
+        record = self.server.sessions / f"{pid}.json"
+        session = json.loads(record.read_text())
+        self.server.requests.append((int(pid), start, session.get("status"), time.time()))
+        if int(pid) not in self.server.reconnects:
+            self.wfile.write(b"refused foreground\n")
+            return
+        session["bridgeSessionId"] = "session_new"
+        record.write_text(json.dumps(session))
+        self.wfile.write(b"pressed\n")
+
+
 def remote_checks(m, sessions):
-    """Remote Control after a switch: the sessions that had it get /remote-control typed in their tmux pane once they
-    dropped it and wait idle at an empty prompt, and only those."""
+    """Remote Control after a switch: the sessions that had it get /remote-control run once they dropped it and wait
+    idle. Ctrl+X Ctrl+Q, which save binds to it, is pressed at the prompt of their tmux pane, or by the root service
+    outside tmux, and /remote-control is typed at an empty prompt when the key isn't bound or didn't take."""
     fake = m.home.parent / "tmux"
     fake.mkdir()
     bin_folder = m.home.parent / "bin"
     bin_folder.mkdir()
     (bin_folder / "tmux").write_text((pathlib.Path(__file__).parent / "fake-tmux.py").read_text())
     (bin_folder / "tmux").chmod(0o755)
+    service = RootService(m.home.parent / "remote.sock", sessions)
+    threading.Thread(target=service.serve_forever, daemon=True).start()
     env = {**m.env, "PATH": f"{bin_folder}:{m.env['PATH']}", "FAKE_TMUX": str(fake), "CLAUDE_SWITCH_REMOTE_DROP": "3",
-           "CLAUDE_SWITCH_REMOTE_BACK": "3", "CLAUDE_SWITCH_REMOTE_WAIT": "8"}
+           "CLAUDE_SWITCH_REMOTE_BACK": "2", "CLAUDE_SWITCH_REMOTE_WAIT": "12",
+           "CLAUDE_SWITCH_REMOTE_SOCKET": str(m.home.parent / "remote.sock")}
+    keybindings = m.home / ".claude" / "keybindings.json"
+    chord = {"ctrl+x ctrl+q": "command:remote-control"}
 
-    def run(*arguments, timeout=60):
-        result = subprocess.run([sys.executable, "-I", str(HELPER), "remote", *arguments], env=env,
-                                capture_output=True, text=True, timeout=timeout)
+    def run(*arguments, **changes):
+        result = subprocess.run([sys.executable, "-I", str(HELPER), "remote", *arguments], env={**env, **changes},
+                                capture_output=True, text=True, timeout=90)
         return result.returncode, result.stdout
 
-    processes = {name: subprocess.Popen(["sleep", "300"]) for name in
-                 ("idle", "busy", "typing", "elsewhere", "scrolled", "without", "keeps", "other", "stuck", "shell")}
+    names = ("idle", "busy", "typing", "elsewhere", "scrolled", "without", "keeps", "other", "stuck", "shell")
+    processes = {name: subprocess.Popen(["sleep", "300"]) for name in names}
+    pids = {name: process.pid for name, process in processes.items()}
+    masters = []
+    # Outside tmux, on a terminal of their own.
+    for name in ("terminal", "frozen"):
+        pid, master = pty.fork()
+        if pid == 0:
+            try:
+                os.execvp("sleep", ["sleep", "300"])
+            finally:
+                os._exit(127)
+        pids[name] = pid
+        masters.append(master)
     empty = chr(0x276F) + chr(0xA0)
     records, panes = {}, {}
 
     def session(name, pane=None, bridge="session_old", status="idle", x=2, line=empty, mode="0", reconnects=True,
                 pane_pid=None):
-        process = processes[name]
-        record = {"pid": process.pid, "procStart": start_of(process.pid), "kind": "interactive", "status": status,
-                  "name": name, "bridgeSessionId": bridge}
+        pid = pids[name]
+        record = {"pid": pid, "procStart": start_of(pid), "kind": "interactive", "status": status, "name": name,
+                  "bridgeSessionId": bridge}
         if pane:
             record["tmux"] = f"claude-{name}:@1.{pane}"
-            panes[pane] = {"pane_pid": pane_pid or process.pid, "x": x, "y": 40, "mode": mode, "line": line,
-                           "record": str(sessions / f"{process.pid}.json"), "reconnects": reconnects}
-        records[name] = sessions / f"{process.pid}.json"
+            panes[pane] = {"pane_pid": pane_pid or pid, "x": x, "y": 40, "mode": mode, "line": line,
+                           "record": str(sessions / f"{pid}.json"), "reconnects": reconnects}
+        records[name] = sessions / f"{pid}.json"
         records[name].write_text(json.dumps(record))
 
     def update(name, **fields):
@@ -161,60 +208,139 @@ def remote_checks(m, sessions):
         record.update(fields)
         records[name].write_text(json.dumps(record))
 
+    def restore(**changes):
+        """Runs a restore to its end, the busy session idle after a moment: what a second one at once got, and what
+        came of each session."""
+        first = subprocess.Popen([sys.executable, "-I", str(HELPER), "remote", "restore"], env={**env, **changes},
+                                 stdout=subprocess.PIPE, text=True)
+        time.sleep(2.5)
+        rc, _ = run("restore", **changes)
+        update("busy", status="idle")
+        out, _ = first.communicate(timeout=90)
+        return rc, out, dict(reversed(line.split("\t")) for line in out.splitlines())
+
+    def sent():
+        """The keys sent to each pane, in order, and the status of its session each time."""
+        log = [json.loads(line) for line in (fake / "log").read_text().splitlines()] if (fake / "log").exists() else []
+        by_pane = {}
+        for entry in log:
+            if entry["args"][0] == "send-keys":
+                by_pane.setdefault(entry["args"][2], []).append(entry["args"][3:])
+        return by_pane, [entry["status"] for entry in log if entry["args"][0] == "send-keys"]
+
     try:
         session("idle", "%1")
+        (fake / "panes.json").write_text(json.dumps(panes))
+        rc, _ = run("save")
+        written = json.loads(keybindings.read_text())
+        check("remote save: binds the key in a new keybindings.json", rc == 0
+              and written.get("$schema") == "https://www.schemastore.org/claude-code-keybindings.json"
+              and written.get("bindings") == [{"context": "Chat", "bindings": chord}])
+        check("remote save: a new keybindings.json is readable, as Claude Code writes it",
+              keybindings.stat().st_mode & 0o777 == 0o644)
+        (m.store / ".remote.json").unlink()
+        keybindings.write_text(json.dumps({"bindings": [{"context": "Chat", "bindings": {"ctrl+e": "chat:externalEditor"}}]}))
+        keybindings.chmod(0o600)
         session("busy", "%2", status="busy")
         session("typing", "%3", x=17, line=chr(0x276F) + " fix the tests")
         session("elsewhere")
         session("scrolled", "%5", mode="1")
         session("without", "%6", bridge=None)
         session("keeps", "%7")
-        session("other", "%8", pane_pid=processes["shell"].pid)
+        session("other", "%8", pane_pid=pids["shell"])
         session("stuck", "%9", reconnects=False)
+        session("terminal")
+        session("frozen")
+        service.reconnects.add(pids["terminal"])
         (fake / "panes.json").write_text(json.dumps(panes))
         rc, _ = run("save")
         state = json.loads((m.store / ".remote.json").read_text())
         check("remote save: the sessions with Remote Control on", rc == 0 and sorted(s["name"] for s in state["sessions"])
-              == ["busy", "elsewhere", "idle", "keeps", "other", "scrolled", "stuck", "typing"])
+              == ["busy", "elsewhere", "frozen", "idle", "keeps", "other", "scrolled", "stuck", "terminal", "typing"])
         check("remote save: each with its pane", {s["name"]: s["pane"] for s in state["sessions"]}["idle"] == "%1"
               and {s["name"]: s["pane"] for s in state["sessions"]}["elsewhere"] is None)
         check("remote save: private", (m.store / ".remote.json").stat().st_mode & 0o777 == 0o600)
+        check("remote save: the key bound beside the bindings of the user, in a file that keeps its mode",
+              json.loads(keybindings.read_text())["bindings"]
+              == [{"context": "Chat", "bindings": {"ctrl+e": "chat:externalEditor", **chord}}]
+              and keybindings.stat().st_mode & 0o777 == 0o600)
         rc, out = run("held")
-        check("remote held: Remote Control a switch would take for good, outside tmux or another pane",
+        check("remote held: what a switch would take for good, with no terminal of its own or in another pane",
               rc == 0 and sorted(out.split()) == ["elsewhere", "other"])
+        rc, out = run("held", CLAUDE_SWITCH_REMOTE_SOCKET=str(m.home.parent / "none.sock"))
+        check("remote held: outside tmux without the root service", rc == 0
+              and sorted(out.split()) == ["elsewhere", "frozen", "other", "terminal"])
         # Claude Code drops Remote Control within seconds of the switch, but in a session that keeps it.
-        for name in ("idle", "busy", "typing", "elsewhere", "scrolled", "other", "stuck"):
+        for name in ("idle", "busy", "typing", "elsewhere", "scrolled", "other", "stuck", "terminal", "frozen"):
             update(name, bridgeSessionId=None)
-        restore = subprocess.Popen([sys.executable, "-I", str(HELPER), "remote", "restore"], env=env,
-                                   stdout=subprocess.PIPE, text=True)
-        time.sleep(2.5)
-        rc, _ = run("restore")
+        rc, out, outcomes = restore()
         check("remote restore: one at a time", rc == 1)
-        update("busy", status="idle")
-        out, _ = restore.communicate(timeout=60)
-        outcomes = dict(reversed(line.split("\t")) for line in out.splitlines())
-        check("remote restore: back where it was typed and came back", outcomes.get("idle") == "back"
-              and outcomes.get("busy") == "back")
-        check("remote restore: lost where it can't be typed or didn't come back",
-              all(outcomes.get(name) == "lost" for name in ("typing", "elsewhere", "scrolled", "other", "stuck")))
+        check("remote restore: back where the key was pressed and took",
+              all(outcomes.get(name) == "back" for name in ("idle", "busy", "typing", "terminal")))
+        check("remote restore: lost where nothing can press it, or it didn't take",
+              all(outcomes.get(name) == "lost" for name in ("elsewhere", "scrolled", "other", "stuck", "frozen")))
         check("remote restore: nothing said of a session that kept it", "keeps" not in outcomes)
-        check("remote restore: a session outside tmux is said first", out.splitlines()[0] == "lost\telsewhere")
-        log = [json.loads(line) for line in (fake / "log").read_text().splitlines()]
-        typed = [(entry["args"][2], entry["args"][3:]) for entry in log if entry["args"][0] == "send-keys"]
-        check("remote restore: /remote-control, then Enter, once in each pane it could",
-              sorted(typed) == sorted([(pane, keys) for pane in ("%1", "%2", "%9")
-                                       for keys in (["-l", "/remote-control"], ["Enter"])]))
-        check("remote restore: only in an idle session",
-              all(entry["status"] == "idle" for entry in log if entry["args"][0] == "send-keys"))
+        check("remote restore: a session nothing can reach is said first", out.splitlines()[0] == "lost\telsewhere")
+        keys, statuses = sent()
+        pressed = [["C-x"], ["C-q"]]
+        check("remote restore: Ctrl+X then Ctrl+Q at the prompt of each pane, with text typed or not",
+              keys.get("%1") == pressed and keys.get("%2") == pressed and keys.get("%3") == pressed)
+        check("remote restore: /remote-control typed at the empty prompt when the key didn't take, 3 tries in all",
+              keys.get("%9") == pressed + [["-l", "/remote-control"], ["Enter"]] * 2)
+        check("remote restore: nothing in a pane scrolled back or that runs another program",
+              "%5" not in keys and "%8" not in keys)
+        check("remote restore: only in an idle session", statuses and all(status == "idle" for status in statuses))
+        check("remote restore: outside tmux the root service presses it, for the session that started then",
+              [request[:2] for request in service.requests if request[0] == pids["terminal"]]
+              == [(pids["terminal"], start_of(pids["terminal"]))])
+        tried = [request[3] for request in service.requests if request[0] == pids["frozen"]]
+        check("remote restore: 3 tries outside tmux where the service refused", len(tried) == 3)
+        check("remote restore: the next try once the last had time to take",
+              all(later - earlier >= 1.9 for earlier, later in zip(tried, tried[1:])))
+        check("remote restore: the root service only for an idle session",
+              all(request[2] == "idle" for request in service.requests))
         check("remote restore: nothing left", not (m.store / ".remote.json").exists())
         rc, out = run("held")
         check("remote held: none once those sessions have it off", rc == 1 and out == "")
+
+        # A keybindings.json Claude Code can't read, or a key of the user's in the way: the file stays as it is, the
+        # key is never pressed, and nothing reaches a session outside tmux.
+        service.requests.clear()
+        (fake / "log").unlink()
+        for name in ("idle", "typing", "terminal"):
+            update(name, bridgeSessionId="session_old")
+        for text in ("{ not json", json.dumps({"bindings": [{"context": "Select", "bindings": {"ctrl+q": "select:cancel"}}]})):
+            keybindings.write_text(text)
+            rc, out = run("held")
+            check(f"remote held: outside tmux when the key can't be bound ({text[:10]})", rc == 0 and out.split() == ["terminal"])
+            run("save")
+            check(f"remote save: keybindings.json left as it was ({text[:10]})", keybindings.read_text() == text)
+        for name in ("idle", "typing", "terminal"):
+            update(name, bridgeSessionId=None)
+        rc, out, outcomes = restore(CLAUDE_SWITCH_REMOTE_WAIT="5")
+        keys, _ = sent()
+        check("remote restore: without the key, /remote-control typed at an empty prompt",
+              outcomes.get("idle") == "back" and keys.get("%1") == [["-l", "/remote-control"], ["Enter"]])
+        check("remote restore: without the key, nothing over text typed at the prompt",
+              outcomes.get("typing") == "lost" and "%3" not in keys)
+        check("remote restore: without the key, nothing outside tmux",
+              outcomes.get("terminal") == "lost" and service.requests == [])
     finally:
         for process in processes.values():
             process.kill()
             process.wait()
+        for name in ("terminal", "frozen"):
+            try:
+                os.kill(pids[name], 9)
+                os.waitpid(pids[name], 0)
+            except OSError:
+                pass
+        for master in masters:
+            os.close(master)
         for path in records.values():
             path.unlink(missing_ok=True)
+        service.shutdown()
+        service.server_close()
 
 
 def main():

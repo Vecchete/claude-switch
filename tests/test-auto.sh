@@ -399,11 +399,13 @@ check "read-only settings: automatic switching stays off" '[ ! -e "$STORE/.auto"
 chmod 755 "$HOME/store"
 close_session
 
-# Remote Control after a switch to another claude.ai account: claude-switch remote types /remote-control in the tmux
-# pane of the session that had it, once Claude Code dropped it there and the session waits idle at an empty prompt.
+# Remote Control after a switch to another claude.ai account: claude-switch remote presses Ctrl+X Ctrl+Q, which it binds
+# to /remote-control, in the tmux pane of the session that had it, once Claude Code dropped it there and the session
+# waits idle at its prompt. No root service here.
 cp "$HERE/fake-tmux.py" "$T/bin/tmux"
 chmod +x "$T/bin/tmux"
-export FAKE_TMUX=$T/tmux CLAUDE_SWITCH_REMOTE_DROP=10 CLAUDE_SWITCH_REMOTE_BACK=10 CLAUDE_SWITCH_REMOTE_WAIT=20
+export FAKE_TMUX=$T/tmux CLAUDE_SWITCH_REMOTE_DROP=10 CLAUDE_SWITCH_REMOTE_BACK=10 CLAUDE_SWITCH_REMOTE_WAIT=20 \
+    CLAUDE_SWITCH_REMOTE_SOCKET=$T/remote.sock
 mkdir -p "$FAKE_TMUX"
 sleep 300 &
 RC_PID=$!
@@ -421,16 +423,19 @@ check "remote: the store isn't held while it waits" 'timeout 5 "$SCRIPT" list'
 # Claude Code drops Remote Control within seconds of the switch.
 jq '.bridgeSessionId = null' "$RC_RECORD" > "$T/r" && mv "$T/r" "$RC_RECORD"
 for _ in $(seq 100); do grep -q "Remote Control is back" "$T/notify" 2>/dev/null && break; sleep 0.2; done
-check "remote: /remote-control typed in its pane, then Enter" \
+check "remote: the key bound to /remote-control" \
+    '[ "$(jq -r ".bindings[] | select(.context == \"Chat\") | .bindings[\"ctrl+x ctrl+q\"]" "$HOME/.claude/keybindings.json")" = command:remote-control ]'
+check "remote: Ctrl+X, then Ctrl+Q, in its pane" \
     '[ "$(jq -c "select(.args[0] == \"send-keys\") | .args" "$FAKE_TMUX/log" | tr "\n" " ")" \
-    = "[\"send-keys\",\"-t\",\"%1\",\"-l\",\"/remote-control\"] [\"send-keys\",\"-t\",\"%1\",\"Enter\"] " ]'
+    = "[\"send-keys\",\"-t\",\"%1\",\"C-x\"] [\"send-keys\",\"-t\",\"%1\",\"C-q\"] " ]'
 check "remote: says it's back, and under which account" 'grep -q "Remote Control is back In 1 session, under ultra: " "$T/notify"'
 "$SCRIPT" rename ultra remote > "$T/out" 2>&1; rc=$?
 check "remote is no name" '[ "$rc" -ne 0 ] && grep -q "remote is a command of this script" "$T/out"'
 kill "$RC_PID" 2>/dev/null
 
-# A session outside tmux with Remote Control on: nothing can type /remote-control there, so going to a better
-# claude.ai account waits for it while the account in use has room. A switch typed by hand or forced by a limit goes.
+# A session outside tmux with Remote Control on, without the root service: nothing can press the key there, so going
+# to a better claude.ai account waits for it while the account in use has room. A switch typed by hand or forced by a
+# limit goes.
 # A session with Remote Control on, outside tmux. NAME
 plain_session() {
     sleep 300 &
@@ -452,14 +457,14 @@ done
 plain_session plain-terminal
 "$SCRIPT" auto on > "$T/out" 2>&1
 check "outside tmux: a better account waits" 'marked a@example.com \
-    && grep -qx "It stays on a@example.com while Remote Control runs outside tmux in plain-terminal: a switch would take it from them." "$T/out"'
+    && grep -qx "It stays on a@example.com while Remote Control is on in plain-terminal, where a switch would take it for good." "$T/out"'
 "$SCRIPT" watch > "$T/out" 2>&1
 "$SCRIPT" watch >> "$T/out" 2>&1
 check "outside tmux: the watch waits too, quietly" 'marked a@example.com && [ ! -s "$T/out" ]'
-check "outside tmux: said once a day" '[ "$(grep -c "It stays on a@example.com Remote Control runs outside tmux in plain-terminal" "$T/notify")" = 1 ]'
+check "outside tmux: said once a day" '[ "$(grep -c "It stays on a@example.com Remote Control is on in plain-terminal, where claude-switch can.t bring it back" "$T/notify")" = 1 ]'
 "$SCRIPT" auto > "$T/out" 2>&1
 check "outside tmux: auto says what it waits for" \
-    'grep -qx "It waits to go there while Remote Control runs outside tmux in plain-terminal." "$T/out"'
+    'grep -qx "It waits to go there while Remote Control is on in plain-terminal, where a switch would take it for good." "$T/out"'
 end_plain_session
 open_session
 "$SCRIPT" watch > "$T/out" 2>&1

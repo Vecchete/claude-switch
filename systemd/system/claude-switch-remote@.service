@@ -1,0 +1,38 @@
+[Unit]
+Description=claude-switch: press the Remote Control key in a Claude Code session
+CollectMode=inactive-or-failed
+
+[Service]
+# Root for TIOCSTI only: it may open the terminals of other users and put keys in them, and nothing else.
+ExecStart=/usr/bin/python3 -I -S /usr/local/libexec/claude-switch/remote-keys.py
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+RuntimeMaxSec=30
+RuntimeDirectory=claude-switch-remote
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+UMask=0077
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
+NoNewPrivileges=yes
+DevicePolicy=closed
+DeviceAllow=char-pts rw
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

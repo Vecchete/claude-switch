@@ -30,7 +30,8 @@ tests/run.sh switch keys     # some of them
 | `test-desktop.py` | `desktop` | `desktop.py`, with a Desktop folder, a cookie database and stand-in Desktop processes |
 | `test-switch-desktop.sh` | `switch-desktop` | claude-switch driving `desktop.py` |
 | `test-completion.sh` | `completion` | The bash completion, called directly and through readline in a real interactive bash |
-| `test-install.sh` | `install` | `install.sh`, with a stand-in `systemctl` |
+| `test-install.sh` | `install` | `install.sh`, with a stand-in `systemctl`, the service of root under a scratch root |
+| `test-remote-keys.py` | `remote-keys` | `remote-keys.py`, the service of root, with stand-in sessions on pseudo-terminals of their own: who may ask, which session and terminal it presses in, and the keys themselves |
 
 ## Running them in a container
 
@@ -57,6 +58,15 @@ docker run --rm --network none \
 
 Ubuntu 22.04 works the same way, except for the suite of the extension, whose `node` is too old there.
 
+As another user than root, `test-remote-keys.py` runs every check of the service up to the press, which
+the kernel refuses. As root with `CAP_SYS_ADMIN` the keys reach the stand-in sessions, and the checks that
+need a second user run too:
+
+```bash
+docker run --rm --network none --user root --cap-add SYS_ADMIN -v "$PWD:/work:ro" claude-switch-tests \
+    python3 -I /work/tests/test-remote-keys.py /work/share/remote-keys.py
+```
+
 ## Mutants
 
 `tests/mutants.py` breaks one guard at a time, in a copy, and runs the suite that must catch it. Every
@@ -65,13 +75,15 @@ test holds. Every one of them must end `killed`.
 
 ```bash
 tests/mutants.py               # all of them, one at a time
-tests/mutants.py desktop       # the mutants of one file: switch, host, install, desktop, worker, completion or usage
+tests/mutants.py desktop       # the mutants of one file: switch, host, install, desktop, worker, completion, usage
+                               # or remote-keys
 tests/mutants.py key-twin-kept # one mutant, by name
 ```
 
 Run them one at a time. The suite of the Chrome host depends on timing, and a run under load that fails
 for that reason counts a mutant as killed when it is not. `-j` runs several at once, which is fine for
-the mutants of `switch`.
+the mutants of `switch`. The mutants of `remote-keys` are all killed only as root with `CAP_SYS_ADMIN`, in
+the container above with `bash -c 'cd /work && python3 -I tests/mutants.py remote-keys'`.
 
 A new guard comes with its mutant, and with the test that kills it.
 
@@ -109,6 +121,12 @@ real services and apps:
   limit of its account carried on by itself on the next account.
 - Claude Code 2.1.329 keeps its last reading of the usage of the account it's on in
   `cachedUsageUtilization` of `~/.claude.json`, and lists its running sessions in `~/.claude/sessions`.
+- Claude Code 2.1.327 and 2.1.330: `ctrl+x ctrl+q` bound to `command:remote-control` in the `Chat` context
+  of `~/.claude/keybindings.json` turns Remote Control on and leaves the text at the prompt as it was, in
+  a session that started before the file existed too. Put in its terminal with `TIOCSTI` by root, on Linux
+  7.0 with `dev.tty.legacy_tiocsti` at 0, the two keys do the same. The claude-switch-remote service,
+  installed under systemd 255 on Ubuntu 24.04 with its sandbox, brought Remote Control back that way in a
+  session that ran outside tmux for Claude Code, and refused a shell and PID 1.
 - claude.ai: a made-up session gets a 403 JSON answer with `account_session_invalid` from `/api/account`,
   saved sessions swap without a sign-in, and a page that sends half a swapped session gets it revoked.
 - claude.ai: the first Remote Control session of an account in Chrome or Desktop asks for a fresh sign-in,

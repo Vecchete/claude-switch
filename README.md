@@ -122,6 +122,19 @@ install Chrome. [docs/chrome.md](docs/chrome.md) says how the swap works.
 
 Nothing more to do. When Claude Desktop is installed, it follows the switch.
 
+### Remote Control outside tmux
+
+After a switch to another claude.ai account, claude-switch brings Remote Control back in the sessions that
+run in tmux. For those in another terminal, over SSH or in the terminal of VS Code, install the
+claude-switch-remote service, which runs as root to press the key there:
+
+```bash
+sudo ./install.sh --root
+```
+
+[docs/switch.md](docs/switch.md#the-claude-switch-remote-service) says what it does, and
+[SECURITY.md](SECURITY.md) what it checks first.
+
 ## Quick start
 
 1. Run `claude-switch list`. The first time any claude-switch command runs, it saves the account Claude
@@ -292,9 +305,9 @@ and says how to report a problem.
 - Claude Desktop must be closed for a switch, so an open Desktop is restarted unless you say no, and on
   an automatic switch without asking. The first Remote Control session of an account in Chrome or in
   Desktop asks for one sign-in.
-- A switch to another claude.ai account takes Remote Control from the sessions. claude-switch types
-  `/remote-control` back in those that run in tmux, once each waits idle at an empty prompt, and names the
-  others. While one outside tmux has Remote Control on, automatic switching doesn't go to a better
+- A switch to another claude.ai account takes Remote Control from the sessions. claude-switch brings it
+  back once each waits idle, in tmux, and outside tmux with the claude-switch-remote service, and names
+  the others. While one it can't reach has Remote Control on, automatic switching doesn't go to a better
   claude.ai account until the one in use runs out. A phone or another browser shows the sessions once
   it's signed in to the new account.
 - What a subscription has left comes from an endpoint Anthropic doesn't document. When it changes, `list`
@@ -310,7 +323,7 @@ and says how to report a problem.
 | Part | Tested with |
 |---|---|
 | Linux | Ubuntu 24.04 and 22.04 |
-| Claude Code | 2.1.314, 2.1.326 and 2.1.329 |
+| Claude Code | 2.1.314, 2.1.326, 2.1.327, 2.1.329 and 2.1.330 |
 | jq | 1.6 and 1.7 |
 | Chrome | Chrome Beta 155 |
 | Claude Desktop | 4.4212.0, the Linux beta from Anthropic's apt repository |
@@ -329,11 +342,12 @@ systemctl --user daemon-reload
 rm -f ~/.local/bin/claude-switch ~/.local/share/bash-completion/completions/claude-switch
 rm -f ~/.config/google-chrome*/NativeMessagingHosts/com.lucasvecchete.claude_switch.json
 rm -rf ~/.local/share/claude-switch
+sudo ./install.sh --remove-root   # from the checkout, when the service of root is installed
 ```
 
-Then remove Claude account switch in `chrome://extensions`. Claude Code stays signed in to the active
-account. `~/.claude-accounts` still holds the logins of every account: delete it once you don't need
-them anymore.
+Then remove Claude account switch in `chrome://extensions`, and the `ctrl+x ctrl+q` binding from
+`~/.claude/keybindings.json` if you like. Claude Code stays signed in to the active account.
+`~/.claude-accounts` still holds the logins of every account: delete it once you don't need them anymore.
 
 ## Documentation
 

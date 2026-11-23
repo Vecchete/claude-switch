@@ -113,10 +113,10 @@ room again first.
 The same as with a switch you type, see [switch.md](switch.md), except for one thing: Claude Desktop restarts
 without asking when the switch goes from one claude.ai account to another. Its Code and Cowork tasks stop with
 it. A switch to or from a key leaves Desktop and Chrome alone. Every automatic switch shows a desktop
-notification. Remote Control comes back by itself in the sessions that had it, once each is idle at an empty
-prompt in tmux. While a session outside tmux has Remote Control on, the machine doesn't go to a better
-claude.ai account until the one in use runs out, since nothing could bring Remote Control back there. See
-[switch.md](switch.md#running-sessions).
+notification. Remote Control comes back by itself in the sessions that had it, once each is idle: in tmux,
+and outside tmux once the claude-switch-remote service is installed. While a session nothing can reach has
+Remote Control on, the machine doesn't go to a better claude.ai account until the one in use runs out,
+since nothing could bring Remote Control back there. See [switch.md](switch.md#running-sessions).
 
 When the session that met the limit runs in Claude Desktop, in its Code tab, the hook runs inside Desktop, and
 closing Desktop would end the hook with the session. So the machine moves on, Desktop stays on its account, and
@@ -186,6 +186,9 @@ Beside the accounts, in `~/.claude-accounts`, mode 600 in a folder of mode 700:
 | `.switched`, `.woken/` | When the last switch happened, and when each session was woken |
 | `.remote.json` | The sessions a switch took Remote Control from, until `claude-switch remote` is done with them |
 | `.auto.log` | What the automatic switches did, cut to its last 2000 lines once it passes 1 MB |
+
+Outside it, `~/.claude/keybindings.json` gets the binding of `Ctrl+X Ctrl+Q` to `/remote-control`, the
+key that brings Remote Control back, see [switch.md](switch.md#running-sessions).
 
 ## Limits
 

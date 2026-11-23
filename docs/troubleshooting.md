@@ -98,10 +98,17 @@ After that the registration moves with the account. See [chrome.md](chrome.md#re
 ### Remote Control didn't come back after a switch
 
 The notification `Remote Control is off in ...` names the sessions where `claude-switch remote` couldn't
-type `/remote-control`: one that doesn't run in tmux, one with text at its prompt or a pane scrolled back
-in copy mode, or one that stayed busy for 15 minutes. Run `/remote-control` in it. When the sessions are
-back but don't show on your phone or another computer, sign that device in to the account the machine
-moved to: the sessions are under that account now.
+run `/remote-control`: one outside tmux without the claude-switch-remote service, one of Desktop or of an
+IDE, a pane scrolled back in copy mode, one that stayed busy for 15 minutes, or one where the key didn't
+take 3 times, a dialog left open for instance. Run `/remote-control` in it. When the sessions are back but
+don't show on your phone or another computer, sign that device in to the account the machine moved to:
+the sessions are under that account now.
+
+The key is `Ctrl+X Ctrl+Q`, bound in `~/.claude/keybindings.json`. When a binding of yours takes
+`Ctrl+X` or `Ctrl+Q`, claude-switch can't bind it: it then types `/remote-control` in tmux at an empty
+prompt only. Outside tmux, `journalctl -u 'claude-switch-remote@*'` says what the service pressed and
+what it refused, and why: a session that wasn't the foreground of its terminal, or a program of another
+user on that terminal, `sudo` for instance.
 
 On a Claude Code older than 2.1.330, the mobile app can show a session as working after Remote Control was
 turned on mid-conversation, which is what `/remote-control` after a switch does. Exit such a session and
@@ -109,10 +116,11 @@ resume it with `claude --resume` to run the installed version.
 
 ### The machine stays on an account while a better one has room
 
-`claude-switch auto` then says `It waits to go there while Remote Control runs outside tmux in ...`. Those
-sessions would lose Remote Control for good, so the better account waits until they end or the account in
-use runs out. Close them, or run them in tmux, or switch by hand with `claude-switch NAME` and run
-`/remote-control` in them afterwards.
+`claude-switch auto` then says `It waits to go there while Remote Control is on in ...`. Nothing could
+bring Remote Control back in those sessions after the switch, so the better account waits until they end
+or the account in use runs out. Install the claude-switch-remote service with `sudo ./install.sh --root`
+for the sessions outside tmux, run them in tmux, close them, or switch by hand with `claude-switch NAME`
+and run `/remote-control` in them afterwards.
 
 ### `Claude Desktop is open, so it stays on its account.`
 

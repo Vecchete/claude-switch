@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Stands in for tmux. It answers display-message and capture-pane for the panes of $FAKE_TMUX/panes.json, and logs
-every call in $FAKE_TMUX/log with the status the session of the pane had at that moment. An Enter sent to a pane that
-reconnects sets bridgeSessionId in the record of its session, as /remote-control does in Claude Code.
+every call in $FAKE_TMUX/log with the status the session of the pane had at that moment. An Enter, or the C-q of the
+chord bound to /remote-control, sent to a pane that reconnects sets bridgeSessionId in the record of its session, as
+/remote-control does in Claude Code.
 
 panes.json: {"%1": {"pane_pid": PID, "x": 2, "y": 10, "mode": "0", "line": "the cursor line", "record": "PATH",
 "reconnects": true}, ...}
@@ -31,7 +32,8 @@ if arguments[0] == "display-message":
     print(text)
 elif arguments[0] == "capture-pane":
     print(pane["line"])
-elif arguments[0] == "send-keys" and arguments[-1] == "Enter" and pane.get("reconnects") and record is not None:
+elif arguments[0] == "send-keys" and arguments[-1] in ("Enter", "C-q") and pane.get("reconnects") \
+        and record is not None:
     session = json.loads(record.read_text())
     session["bridgeSessionId"] = "session_new"
     record.write_text(json.dumps(session))

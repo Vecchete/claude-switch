@@ -1,0 +1,13 @@
+[Unit]
+Description=claude-switch: Remote Control back in Claude Code sessions outside tmux
+
+[Socket]
+ListenStream=/run/claude-switch-remote.sock
+# Every user may ask, and each only for a session of their own: the service reads who asks from the socket.
+SocketMode=0666
+Accept=yes
+MaxConnections=16
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

@@ -37,9 +37,24 @@ Only the latest commit of `main` gets fixes. There are no releases yet.
 - With automatic switching on, `~/.claude/settings.json` holds a hook that runs `claude-switch hook` when
   a Claude Code turn ends on an API error. What the hook prints goes to Claude, so it prints one sentence
   that names accounts and never a token, and says the rest in `~/.claude-accounts/.auto.log`.
-- After a switch to another claude.ai account, it types `/remote-control`, and nothing else, in the tmux
-  pane of each session that had Remote Control on, once per session, and only while the session waits idle
-  at its prompt with nothing typed, out of copy mode.
+- After a switch to another claude.ai account, it brings Remote Control back in each session that had it,
+  while the session waits idle, 3 times at most. It presses `Ctrl+X Ctrl+Q`, which it binds to
+  `/remote-control` in `~/.claude/keybindings.json`, or types `/remote-control` at an empty prompt when
+  that key can't be bound, and nothing else. In tmux it does so only at the prompt of the session's own
+  pane, out of copy mode.
+- Outside tmux, the optional claude-switch-remote service presses that key. It runs as root, since only
+  root can put a key in a terminal that isn't one's own, and anyone on the machine can ask it. It presses
+  `Ctrl+X` then `Ctrl+Q` and nothing else, only when all of these hold:
+  - the session runs as the user who asks, read from the socket, is called `claude`, and started when
+    the request says, so a pid used again is never taken for it,
+  - its controlling terminal is a pseudo-terminal of that user, where it is the foreground, in raw mode,
+  - every process on that terminal runs as that user, so no program of another user, a root shell the
+    session runs under for one, ever reads the keys,
+  - it didn't press in that session in the last 20 seconds.
+
+  systemd runs it with no capability but `CAP_SYS_ADMIN` and `CAP_DAC_OVERRIDE`, no network, no home
+  folders, a read-only system and pseudo-terminals as its only devices. Every press and every refusal goes
+  to the journal.
 - The Chrome extension sees claude.ai only, and talks to the host through the native messaging of Chrome.
   claude-switch reaches the host through a Unix socket in `~/.claude-accounts`.
 - The Claude Desktop sign-in is saved as Desktop encrypted it, and never decrypted.

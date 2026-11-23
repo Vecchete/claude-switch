@@ -6,6 +6,8 @@ T=$(mktemp -d "${TMPDIR:-/tmp}/claude-switch-install.XXXXXX")
 trap 'rm -rf "$T"' EXIT
 export HOME=$T/home
 export FAKE_SYSTEMCTL_LOG=$T/systemctl.log
+# The files of root go there, never to /etc and /usr.
+export CLAUDE_SWITCH_SYSTEM=$T/system
 # They move the folder bash-completion loads from, out of the scratch HOME.
 unset BASH_COMPLETION_USER_DIR XDG_DATA_HOME
 mkdir -p "$HOME/.local/bin" "$HOME/.config/google-chrome-beta" "$T/bin"
@@ -71,6 +73,43 @@ XDG_DATA_HOME=$T/data "$INSTALL" > "$T/out" 2>&1
 check "the completion follows XDG_DATA_HOME" '[ -f "$T/data/bash-completion/completions/claude-switch" ]'
 BASH_COMPLETION_USER_DIR=$T/user XDG_DATA_HOME=$T/data "$INSTALL" > "$T/out" 2>&1
 check "and BASH_COMPLETION_USER_DIR before it" '[ -f "$T/user/completions/claude-switch" ]'
+
+# The claude-switch-remote service of root, under a scratch root.
+REPO=$(dirname "$INSTALL")
+SERVICE=$T/system/usr/local/libexec/claude-switch/remote-keys.py
+SOCKET_UNIT=$T/system/etc/systemd/system/claude-switch-remote.socket
+SERVICE_UNIT=$T/system/etc/systemd/system/claude-switch-remote@.service
+CLAUDE_SWITCH_SYSTEM= "$INSTALL" --root > "$T/out" 2>&1; rc=$?
+check "the service of root needs root" '[ "$rc" -eq 1 ] && grep -q "needs root: sudo .* --root" "$T/out" && [ ! -e "$T/system" ]'
+mkdir -p "$T/fakeroot"
+printf '#!/bin/sh\n[ "$1" = -u ] && echo 0 || exec /usr/bin/id "$@"\n' > "$T/fakeroot/id"
+chmod +x "$T/fakeroot/id"
+PATH=$T/fakeroot:$PATH SUDO_USER=someone "$INSTALL" > "$T/out" 2>&1; rc=$?
+check "sudo for everything is refused: it would install for root" '[ "$rc" -eq 1 ] && grep -q "as yourself" "$T/out"'
+: > "$T/systemctl.log"
+CLAUDE_SWITCH_SYSTEM=$T/system "$INSTALL" --root > "$T/out" 2>&1; rc=$?
+check "the service: installed" '[ "$rc" -eq 0 ] && cmp -s "$SERVICE" "$REPO/share/remote-keys.py" \
+    && [ "$(stat -c %a "$SERVICE")" = 755 ] && [ "$(stat -c %a "$SOCKET_UNIT")" = 644 ] \
+    && cmp -s "$SERVICE_UNIT" "$REPO/systemd/system/claude-switch-remote@.service"'
+check "the service: its socket started, with systemd of the system" \
+    'grep -qx daemon-reload "$T/systemctl.log" && grep -qx "enable --now claude-switch-remote.socket" "$T/systemctl.log"'
+check "the service: nothing of the user installed with it" '! grep -q "$HOME" "$T/out"'
+CLAUDE_SWITCH_SYSTEM=$T/system "$INSTALL" --root > "$T/out" 2>&1
+check "the service: a second install changes nothing" 'grep -q "Nothing to install, the service matches" "$T/out"'
+CLAUDE_SWITCH_SYSTEM=$T/system "$INSTALL" --check > "$T/out" 2>&1; rc=$?
+check "check: the service as installed" '[ "$rc" -eq 0 ]'
+printf '# an edit\n' >> "$SERVICE"
+CLAUDE_SWITCH_SYSTEM=$T/system "$INSTALL" --check > "$T/out" 2>&1; rc=$?
+check "check sees an edited service" '[ "$rc" -eq 1 ] && grep -qx "differs: $SERVICE" "$T/out"'
+CLAUDE_SWITCH_SYSTEM=$T/system "$INSTALL" > "$T/out" 2>&1
+check "install says the service differs, and leaves it to sudo" \
+    'grep -q "service differs from this checkout. Update it with: sudo .* --root" "$T/out" && [ "$(tail -1 "$SERVICE")" = "# an edit" ]'
+: > "$T/systemctl.log"
+CLAUDE_SWITCH_SYSTEM=$T/system "$INSTALL" --remove-root > "$T/out" 2>&1; rc=$?
+check "the service: removed" '[ "$rc" -eq 0 ] && [ ! -e "$SERVICE" ] && [ ! -e "$SOCKET_UNIT" ] && [ ! -e "$SERVICE_UNIT" ] \
+    && grep -qx "disable --now claude-switch-remote.socket" "$T/systemctl.log" && grep -qx daemon-reload "$T/systemctl.log"'
+CLAUDE_SWITCH_SYSTEM=$T/system "$INSTALL" --remove-root > "$T/out" 2>&1
+check "the service: removed twice" 'grep -q "not installed" "$T/out"'
 
 printf '%d passed, %d failed\n' "$passes" "$fails"
 [ "$fails" -eq 0 ]
