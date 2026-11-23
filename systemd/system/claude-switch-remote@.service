@@ -1,5 +1,5 @@
 [Unit]
-Description=claude-switch: press the Remote Control key in a Claude Code session
+Description=claude-switch: press the key of Remote Control or /after-switch in a Claude Code session
 CollectMode=inactive-or-failed
 
 [Service]

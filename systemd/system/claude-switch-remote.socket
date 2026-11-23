@@ -1,5 +1,5 @@
 [Unit]
-Description=claude-switch: Remote Control back in Claude Code sessions outside tmux
+Description=claude-switch: Remote Control and /after-switch in Claude Code sessions outside tmux
 
 [Socket]
 ListenStream=/run/claude-switch-remote.sock
