@@ -2,7 +2,7 @@
 """What each Claude account has left, the account the machine should be on, and whether a session is open. The
 Windows port of share/usage.py, which it follows function by function: a session is told by the creation time of its
 process, JSON is read as UTF-8, a reading another run has open is replaced once it lets go, claude-switch gets UTF-8,
-and /remote-control goes to the console of a session as keys, where Linux has its tmux pane.
+and the keys that bring Remote Control back go to the console of a session, where Linux has its tmux pane.
 
 A claude.ai account is read from the endpoint Claude Code's /usage reads, with the account's own access token.
 Claude Code keeps its last reading of the account it is on in ~/.claude.json, which goes first while it is the
@@ -30,17 +30,20 @@ resets before one that doesn't, credit nobody can read last.
     usage.py why FILE                     why FILE can't be used now, as a phrase, exit 1 when it can
     usage.py first FILE...                the account that has room again first, and when
     usage.py remote save                  remember the sessions with Remote Control on, before a switch to another
-                                          claude.ai account takes it from them
-    usage.py remote restore               type /remote-control in the terminal of each of them once it dropped Remote
-                                          Control and waits idle at an empty prompt: its tmux pane, its console on
-                                          Windows. Prints back or lost, a tab and the name of each session, exit 1
-                                          when another restore runs
-    usage.py remote held                  the sessions with Remote Control on that restore couldn't type in, outside
-                                          tmux, or on Windows outside a terminal whose console it can read, one name
-                                          a line, exit 1 when there are none
-    usage.py remote console PID line|text TEXT|enter
+                                          claude.ai account takes it from them, and bind Ctrl+X Ctrl+Q to
+                                          /remote-control in ~/.claude/keybindings.json
+    usage.py remote restore               run /remote-control in each of them once it dropped Remote Control and
+                                          waits idle: press Ctrl+X Ctrl+Q at its prompt, in its console on Windows and
+                                          its tmux pane elsewhere, or have the claude-switch-remote service press it
+                                          outside tmux. Prints back or lost, a tab and the name of each session, exit
+                                          1 when another restore runs
+    usage.py remote held                  the sessions with Remote Control on that restore can't reach, outside tmux
+                                          without the service, or on Windows outside a terminal whose console it can
+                                          read, one name a line, exit 1 when there are none
+    usage.py remote console PID line|text TEXT|enter|ctrl LETTER
                                           Windows, for restore: where the cursor of the console of the process PID is
-                                          on its line, a tab and the text of that line, or TEXT or Enter typed there
+                                          on its line, a tab and the text of that line, or TEXT, Enter or Ctrl and
+                                          LETTER pressed there
 """
 import argparse
 import concurrent.futures
@@ -49,6 +52,8 @@ import json
 import math
 import os
 import pathlib
+import socket
+import stat
 import subprocess
 import sys
 import time
@@ -82,12 +87,22 @@ HOLDS = {"limit": 15 * MINUTE, "rate": 5 * MINUTE, "credit": 24 * 60 * MINUTE, "
 # The sessions a switch took Remote Control from, and how far bringing it back went.
 REMOTE = STORE / ".remote.json"
 # In seconds: how long a session has to drop Remote Control after the switch, which Claude Code does within seconds,
-# how long it has to be back once /remote-control was typed, and how long a session is waited for to be idle.
+# how long it has to be back once /remote-control was run, and how long a session is waited for to be idle. It's
+# run 3 times at most: a dialog can be open when the key is pressed outside tmux, where nothing shows it.
 REMOTE_DROP = float(os.environ.get("CLAUDE_SWITCH_REMOTE_DROP") or 60)
 REMOTE_BACK = float(os.environ.get("CLAUDE_SWITCH_REMOTE_BACK") or 30)
 REMOTE_WAIT = float(os.environ.get("CLAUDE_SWITCH_REMOTE_WAIT") or 900)
+REMOTE_TRIES = 3
 # The prompt of Claude Code, where the cursor waits when nothing is typed.
 PROMPTS = (chr(0x276F), ">")
+# The key that runs /remote-control in the Chat context of Claude Code, whatever is typed at the prompt, and does
+# nothing elsewhere. Claude Code reads its keybindings again when the file changes.
+KEYBINDINGS = HOME / ".claude" / "keybindings.json"
+CHORD = "ctrl+x ctrl+q"
+COMMAND = "command:remote-control"
+# The claude-switch-remote service, which runs as root: only root can press a key in a session outside tmux. Windows
+# needs none, since a console takes key presses from any process of the same user.
+REMOTE_SOCKET = os.environ.get("CLAUDE_SWITCH_REMOTE_SOCKET") or "/run/claude-switch-remote.sock"
 
 
 def now_ms():
@@ -687,30 +702,33 @@ def console(pid, *request):
     return result.stdout.decode("utf-8", "replace") if result.returncode == 0 else None
 
 
-def at_empty_prompt(pane, pid):
-    """True when PANE shows the Claude Code of PID, out of copy mode, its cursor at a prompt with nothing typed. On
-    Windows the pane is the console of PID itself, which shows that program alone and has no copy mode for keys to go
-    to: the line its cursor is on is read there."""
+def prompt_of(pane, pid):
+    """What PANE shows at its cursor while it runs the Claude Code of PID, out of copy mode: empty for the prompt with
+    nothing typed, draft for the prompt with text, None for anything else. On Windows the pane is the console of PID
+    itself, which shows that program alone and has no copy mode for keys to go to: the line its cursor is on is read
+    there."""
     if WINDOWS:
         x, _, line = (console(pid, "line") or "").partition("\t")
         try:
             x = int(x)
         except ValueError:
-            return False
+            return None
     else:
         info = tmux("display-message", "-p", "-t", pane, "#{pane_pid}\t#{cursor_x}\t#{cursor_y}\t#{pane_in_mode}")
         try:
             pane_pid, x, y, mode = info.rstrip("\n").split("\t")
             pane_pid, x, y = int(pane_pid), int(x), int(y)
         except (AttributeError, ValueError):
-            return False
+            return None
         if mode != "0" or not descends(pid, pane_pid):
-            return False
+            return None
         line = tmux("capture-pane", "-p", "-t", pane, "-S", str(y), "-E", str(y))
         if line is None:
-            return False
+            return None
     text = line.rstrip("\n").replace(chr(0xA0), " ").rstrip()
-    return text in PROMPTS and x == len(text) + 1
+    if text in PROMPTS and x == len(text) + 1:
+        return "empty"
+    return "draft" if any(text.startswith(f"{prompt} ") for prompt in PROMPTS) else None
 
 
 def pane_of(session):
@@ -748,10 +766,13 @@ def with_remote_control():
 
 
 def send_keys(pane, pid, text):
-    """TEXT typed in PANE, or Enter for "Enter": through tmux, as keys in the console of PID on Windows."""
+    """TEXT typed in PANE, Enter for "Enter", or Ctrl and a letter for "C-x" and "C-q": through tmux, as keys in the
+    console of PID on Windows."""
+    key = text in ("Enter", "C-x", "C-q")
     if WINDOWS:
-        return console(pid, *(["enter"] if text == "Enter" else ["text", text])) is not None
-    return tmux("send-keys", "-t", pane, *(["Enter"] if text == "Enter" else ["-l", text])) is not None
+        request = ["enter"] if text == "Enter" else ["ctrl", text[2]] if key else ["text", text]
+        return console(pid, *request) is not None
+    return tmux("send-keys", "-t", pane, *([text] if key else ["-l", text])) is not None
 
 
 def type_remote_control(pane, pid):
@@ -760,6 +781,122 @@ def type_remote_control(pane, pid):
     # Text and Enter that arrive together read as a paste, which Claude Code doesn't send.
     time.sleep(0.5)
     return send_keys(pane, pid, "Enter")
+
+
+def press_chord(pane, pid):
+    if not send_keys(pane, pid, "C-x"):
+        return False
+    # Two keys that arrive together read as a paste. Claude Code waits 3 seconds for the second key of a chord.
+    time.sleep(0.3)
+    return send_keys(pane, pid, "C-q")
+
+
+def spelled(key):
+    return " ".join(str(key).lower().replace("control+", "ctrl+").split())
+
+
+def remote_binding(write=False):
+    """Whether ~/.claude/keybindings.json binds CHORD to /remote-control: bound when it does, free when it doesn't yet
+    and can, None when it can't, as the file isn't one Claude Code reads or a binding of the user's takes the chord,
+    Ctrl+X or Ctrl+Q. With WRITE a free binding is written, and then bound. The file is read and written as UTF-8 with
+    LF line ends on Windows too, and there one marked read-only can't be replaced, so it stays as it is."""
+    try:
+        data = json.loads(KEYBINDINGS.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {"$schema": "https://www.schemastore.org/claude-code-keybindings.json",
+                "$docs": "https://code.claude.com/docs/en/keybindings", "bindings": []}
+    except (OSError, ValueError):
+        return None
+    blocks = data.get("bindings") if isinstance(data, dict) else None
+    if not isinstance(blocks, list) or not all(isinstance(block, dict) and isinstance(block.get("bindings"), dict)
+                                               for block in blocks):
+        return None
+    bound = False
+    for block in blocks:
+        for key, action in block["bindings"].items():
+            key = spelled(key)
+            if key == CHORD and action == COMMAND:
+                bound = True
+            elif key == CHORD or key.startswith(f"{CHORD} ") or (key in ("ctrl+x", "ctrl+q") and action is not None):
+                return None
+    if bound:
+        return "bound"
+    if not write:
+        return "free"
+    chat = next((block for block in blocks if block.get("context") == "Chat"), None)
+    if chat is None:
+        chat = {"context": "Chat", "bindings": {}}
+        blocks.append(chat)
+    chat["bindings"][CHORD] = COMMAND
+    temporary = KEYBINDINGS.with_name(f"{KEYBINDINGS.name}.{os.getpid()}.tmp")
+    try:
+        mode = stat.S_IMODE(KEYBINDINGS.stat().st_mode) if KEYBINDINGS.exists() else 0o644
+        with open(os.open(temporary, os.O_WRONLY | os.O_TRUNC | os.O_CREAT, 0o600), "w", encoding="utf-8",
+                  newline="\n") as handle:
+            handle.write(json.dumps(data, indent=2) + "\n")
+        # On Windows a mode is only the read-only flag, and the file gets the ACL of its folder instead.
+        if not WINDOWS:
+            os.chmod(temporary, mode)
+        os.replace(temporary, KEYBINDINGS)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        return None
+    return "bound"
+
+
+def own_terminal(pid):
+    """True when the process PID has a pseudo-terminal for its controlling terminal."""
+    try:
+        fields = pathlib.Path(f"/proc/{int(pid)}/stat").read_text().rpartition(")")[2].split()
+        return 136 <= os.major(int(fields[4])) <= 143
+    except (OSError, TypeError, ValueError, IndexError):
+        return False
+
+
+def root_service():
+    """True when the claude-switch-remote service listens. Never on Windows, which has no such service."""
+    if WINDOWS:
+        return False
+    try:
+        return stat.S_ISSOCK(os.stat(REMOTE_SOCKET).st_mode)
+    except OSError:
+        return False
+
+
+def through_root(session, ready=("bound",)):
+    """True when the claude-switch-remote service can press the key in SESSION, outside tmux: the key is bound, or
+    READY says free will do, and the session has a terminal of its own."""
+    return remote_binding() in ready and root_service() and own_terminal(session.get("pid"))
+
+
+def press_from_root(pid, start):
+    """Has the claude-switch-remote service press the key in the session PID that started at START. True once it
+    answered, pressed or refused, which counts as a try: what it refuses now, it refuses a second later."""
+    if WINDOWS:
+        return False
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(10)
+            connection.connect(REMOTE_SOCKET)
+            connection.sendall(f"{int(pid)} {int(start)}\n".encode())
+            answer = connection.makefile("rb").readline()
+    except (OSError, TypeError, ValueError):
+        return False
+    return answer.strip() != b""
+
+
+def press(entry, tries):
+    """Runs /remote-control in the session of ENTRY: presses the key at its prompt, in its console on Windows and its
+    tmux pane elsewhere, or has the root service press it outside tmux. /remote-control is typed at an empty prompt
+    instead when the key isn't bound, or when it didn't take. True when it pressed or typed."""
+    pane, pid = entry.get("pane"), entry.get("pid")
+    if not pane:
+        return press_from_root(pid, entry.get("start"))
+    bound = remote_binding() == "bound"
+    where = prompt_of(pane, pid)
+    if where == "empty" and (tries or not bound):
+        return type_remote_control(pane, pid)
+    return bound and where is not None and press_chord(pane, pid)
 
 
 def remote_lock(name):
@@ -787,7 +924,8 @@ def take(lock, wait=True):
 def command_remote_save(arguments):
     """Remembers the sessions with Remote Control on, before a switch takes it from them: each with its tmux pane, or
     none when it runs elsewhere. On Windows a session of a terminal has its console for a pane, and one of Claude
-    Desktop or of a program none. A session still waiting from a switch before stays."""
+    Desktop or of a program none. A session still waiting from a switch before stays. Binds the key that brings it
+    back, which Claude Code reads before the sessions are idle again."""
     now = now_ms()
     with remote_lock(".remote.lock") as lock:
         take(lock)
@@ -795,15 +933,18 @@ def command_remote_save(arguments):
         for session in with_remote_control():
             kept[session.get("pid")] = {"pid": session.get("pid"), "start": session.get("procStart"),
                                         "pane": pane_of(session), "name": name_of(session), "since": now,
-                                        "off": False, "typed": None}
+                                        "off": False, "typed": None, "tries": 0}
         write_private(REMOTE, {"sessions": list(kept.values())})
+    if kept:
+        remote_binding(write=True)
     return 0
 
 
 def command_remote_held(arguments):
-    """The sessions a switch would take Remote Control from for good: nothing can type /remote-control outside tmux,
-    nor on Windows outside a terminal whose console it can read."""
-    held = [name_of(session) for session in with_remote_control() if not in_its_pane(session)]
+    """The sessions a switch would take Remote Control from for good: outside tmux, unless the root service can press
+    the key there, and on Windows outside a terminal whose console it can read."""
+    held = [name_of(session) for session in with_remote_control()
+            if not in_its_pane(session) and not through_root(session, ("bound", "free"))]
     for name in held:
         print(name)
     return 0 if held else 1
@@ -819,17 +960,20 @@ def remote_step(entry, now):
         # Until it dropped Remote Control it's on the account it had: a session that keeps it needs nothing.
         if not connected:
             entry["off"] = True
-            return "lost" if not entry.get("pane") else None
+            # Outside tmux only the root service can press the key, in a session on a terminal of its own. On Windows
+            # a session with no console, one of Claude Desktop, has nothing to press it in.
+            return None if entry.get("pane") or through_root(session) else "lost"
         return "gone" if now - entry.get("since", now) > REMOTE_DROP * 1000 else None
     if connected:
         return "back"
-    if entry.get("typed"):
-        return "lost" if now - entry["typed"] > REMOTE_BACK * 1000 else None
-    if now - entry.get("since", now) > REMOTE_WAIT * 1000:
+    tries = entry.get("tries") or 0
+    if entry.get("typed") and now - entry["typed"] <= REMOTE_BACK * 1000:
+        return None
+    if tries >= REMOTE_TRIES or now - entry.get("since", now) > REMOTE_WAIT * 1000:
         return "lost"
-    if session.get("status") == "idle" and at_empty_prompt(entry["pane"], entry.get("pid")) \
-            and type_remote_control(entry["pane"], entry.get("pid")):
+    if session.get("status") == "idle" and press(entry, tries):
         entry["typed"] = now_ms()
+        entry["tries"] = tries + 1
     return None
 
 
@@ -861,13 +1005,17 @@ def command_remote_restore(arguments):
 
 def command_remote_console(arguments):
     """Windows: attached to the console of the process PID, prints where its cursor is on its line, a tab and the text
-    of that line (line), or presses and lets go each key of TEXT (text TEXT) or Enter (enter) there, as its keyboard
-    would. console() starts this with no console of its own. Exit 1 when it can't."""
+    of that line (line), or presses and lets go each key of TEXT (text TEXT), Enter (enter) or Ctrl and LETTER (ctrl
+    LETTER) there, as its keyboard would. console() starts this with no console of its own. Exit 1 when it can't."""
     import ctypes
     from ctypes import wintypes
     try:
         pid, what = int(arguments.rest[0]), arguments.rest[1]
-        keys = {"enter": "\r", "text": arguments.rest[2] if len(arguments.rest) > 2 else ""}.get(what)
+        given = arguments.rest[2] if len(arguments.rest) > 2 else ""
+        keys = {"enter": "\r", "text": given}.get(what)
+        if what == "ctrl":
+            # Ctrl and a letter types the control character of the letter: 0x18 for X.
+            keys = chr(ord(given.upper()) & 0x1F) if len(given) == 1 and given.isascii() and given.isalpha() else ""
         if what != "line" and not keys:
             return 2
     except (IndexError, ValueError):
@@ -931,15 +1079,25 @@ def command_remote_console(arguments):
                     return 1
                 print(f"{buffer.dwCursorPosition.X}\t{cells[:count.value]}", end="", flush=True)
                 return 0
-            records = (Record * (2 * len(keys)))()
-            for at, char in enumerate(keys):
-                found = user.VkKeyScanW(char)
-                virtual = found & 0xFF if found != -1 else 0
+            if what == "ctrl":
+                # Ctrl down, the letter down and up with Ctrl held, then Ctrl up, as a keyboard sends them.
+                # LEFT_CTRL_PRESSED is 0x0008, VK_CONTROL 0x11, and the virtual key of a letter its capital.
+                letter = ord(given.upper())
+                presses = [(True, 0x11, "\0", 0x0008), (True, letter, keys, 0x0008), (False, letter, keys, 0x0008),
+                           (False, 0x11, "\0", 0)]
+            else:
+                presses = []
+                for char in keys:
+                    # The character carries the key, so no Shift or AltGr goes with it.
+                    found = user.VkKeyScanW(char)
+                    virtual = found & 0xFF if found != -1 else 0
+                    presses += [(True, virtual, char, 0), (False, virtual, char, 0)]
+            records = (Record * len(presses))()
+            for at, (down, virtual, char, state) in enumerate(presses):
                 scan = user.MapVirtualKeyW(virtual, 0) if virtual else 0
-                for half, down in enumerate((True, False)):
-                    # KEY_EVENT. The character carries the key, so no Shift or AltGr goes with it.
-                    records[2 * at + half].EventType = 1
-                    records[2 * at + half].Event.KeyEvent = Key(down, 1, virtual, scan, char, 0)
+                # KEY_EVENT.
+                records[at].EventType = 1
+                records[at].Event.KeyEvent = Key(down, 1, virtual, scan, char, state)
             written = wintypes.DWORD()
             if not kernel.WriteConsoleInputW(handle, records, len(records), ctypes.byref(written)):
                 return 1

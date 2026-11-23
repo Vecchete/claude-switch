@@ -175,7 +175,8 @@ try:
         env.pop(key, None)
     env.update(HOME=str(home), USERPROFILE=str(home), APPDATA=str(root / "roaming"), LOCALAPPDATA=str(root / "local"),
                PATH=f"{bin_}{os.pathsep}{os.environ['PATH']}", FAKE_STATE=str(state), TZ="UTC", no_proxy="127.0.0.1",
-               NO_PROXY="127.0.0.1", CLAUDE_SWITCH_ANTHROPIC_URL=f"http://127.0.0.1:{PORT}")
+               NO_PROXY="127.0.0.1", CLAUDE_SWITCH_ANTHROPIC_URL=f"http://127.0.0.1:{PORT}",
+               CLAUDE_SWITCH_REMOTE_SOCKET=str(state / "remote.sock"))
 
     def run(*arguments, stdin="", **extra):
         return subprocess.run([sys.executable, "-I", str(SCRIPT), *arguments], env=dict(env, **extra), cwd=home,
@@ -669,8 +670,10 @@ try:
                               env=dict(env, **extra), capture_output=True, text=True, encoding="utf-8",
                               errors="replace", timeout=120, creationflags=NO_WINDOW)
 
+    keybindings = claude_dir / "keybindings.json"
+    chord = {"ctrl+x ctrl+q": "command:remote-control"}
     if WINDOWS:
-        timing = {"CLAUDE_SWITCH_REMOTE_DROP": "3", "CLAUDE_SWITCH_REMOTE_BACK": "3", "CLAUDE_SWITCH_REMOTE_WAIT": "20"}
+        timing = {"CLAUDE_SWITCH_REMOTE_DROP": "3", "CLAUDE_SWITCH_REMOTE_BACK": "3", "CLAUDE_SWITCH_REMOTE_WAIT": "25"}
         records = {name: start_session(name, **options) for name, options in (
             ("idle", {}), ("busy", {"status": "busy"}), ("typing", {"typed": "fix the tests"}),
             ("elsewhere", {"entrypoint": "claude-desktop"}), ("without", {"bridge": False}), ("keeps", {}),
@@ -683,6 +686,8 @@ try:
                                     creationflags=subprocess.DETACHED_PROCESS).stdout.partition("\t")
         check("remote console: the line of the cursor, read in the console of a session",
               x == "2" and line.startswith(chr(0x276F) + chr(0xA0)) and not line[2:].strip())
+        keybindings.write_text(json.dumps({"bindings": [{"context": "Chat", "bindings": {"ctrl+e": "chat:externalEditor"}}]}),
+                               encoding="utf-8")
         result = remote("save", **timing)
         saved = read(store / ".remote.json")["sessions"] if (store / ".remote.json").exists() else []
         check("remote save: the sessions with Remote Control on", result.returncode == 0 and sorted(
@@ -690,6 +695,11 @@ try:
         panes = {entry["name"]: entry["pane"] for entry in saved}
         check("remote save: a session of a terminal has its console, one of Desktop none",
               panes.get("idle") == "console" and "elsewhere" in panes and panes["elsewhere"] is None)
+        check("remote save: Ctrl+X Ctrl+Q bound to /remote-control, beside the bindings of the user",
+              read(keybindings).get("bindings")
+              == [{"context": "Chat", "bindings": {"ctrl+e": "chat:externalEditor", **chord}}])
+        check("remote save: keybindings.json written as UTF-8 with LF line ends", b"\r" not in keybindings.read_bytes()
+              and keybindings.read_bytes().endswith(b"}\n"))
         result = remote("held", **timing)
         check("remote held: Remote Control a switch would take for good, outside a terminal or its console unread",
               result.returncode == 0 and sorted(result.stdout.split()) == ["elsewhere", "noconsole"])
@@ -701,11 +711,11 @@ try:
                                    encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
         time.sleep(2.5)
         check("remote restore: one at a time", remote("restore", **timing).returncode == 1)
-        # The busy session stays busy until the restore typed in the others and went past it once more, which it does
-        # in a step of its own, saved at its end, however slow the machine is.
+        # The busy session stays busy until the restore pressed the key in the others and went past it once more, which
+        # it does in a step of its own, saved at its end, however slow the machine is.
         deadline = time.monotonic() + 90
         while time.monotonic() < deadline and not all(
-                keys_of(name)[-1:] and keys_of(name)[-1]["key"] == "\r" for name in ("idle", "stuck")):
+                keys_of(name)[-1:] and keys_of(name)[-1]["key"] == "\x11" for name in ("idle", "typing")):
             time.sleep(0.1)
 
         def saved_at():
@@ -719,22 +729,30 @@ try:
         update(records["busy"], status="idle")
         said, _ = restore.communicate(timeout=120)
         outcomes = dict(reversed(entry.split("\t")) for entry in said.splitlines())
-        check("remote restore: back where it was typed and came back",
-              outcomes.get("idle") == "back" and outcomes.get("busy") == "back")
-        check("remote restore: lost where it can't be typed or didn't come back",
-              all(outcomes.get(name) == "lost" for name in ("typing", "elsewhere", "stuck", "noconsole")))
+        check("remote restore: back where the key was pressed and took, with text typed at the prompt or not",
+              all(outcomes.get(name) == "back" for name in ("idle", "busy", "typing")))
+        check("remote restore: lost where nothing can press it, or it didn't take",
+              all(outcomes.get(name) == "lost" for name in ("elsewhere", "stuck", "noconsole")))
         check("remote restore: nothing said of a session that kept it", "keeps" not in outcomes
               and "without" not in outcomes)
         check("remote restore: a session of Desktop is said first", said.splitlines()[:1] == ["lost\telsewhere"])
         typed = {name: "".join(entry["key"] for entry in keys_of(name)) for name in records}
-        check("remote restore: /remote-control, then Enter, once in each console it could",
-              all(typed[name] == "/remote-control\r" for name in ("idle", "busy", "stuck"))
-              and not any(typed[name] for name in ("typing", "elsewhere", "without", "keeps", "noconsole")))
+        check("remote restore: Ctrl+X then Ctrl+Q at the prompt of each console, with text typed or not",
+              all(typed[name] == "\x18\x11" for name in ("idle", "busy", "typing")))
+        check("remote restore: /remote-control typed at the empty prompt when the key didn't take, 3 tries in all",
+              typed["stuck"] == "\x18\x11" + "/remote-control\r" * 2)
+        check("remote restore: nothing where there's no console to press it in, or it can't be read",
+              not any(typed[name] for name in ("elsewhere", "without", "keeps", "noconsole")))
         check("remote restore: only in an idle session",
               all(entry["status"] == "idle" for name in records for entry in keys_of(name)))
-        check("remote restore: Enter a moment after the text, so it isn't read as a paste",
-              all(len(keys_of(name)) == 16 and keys_of(name)[-1]["at"] - keys_of(name)[-2]["at"] >= 0.4
-                  for name in ("idle", "busy", "stuck")))
+        stuck = keys_of("stuck")
+        check("remote restore: Ctrl+Q a moment after Ctrl+X, Enter a moment after the text, so neither reads as a paste",
+              all(len(keys_of(name)) == 2 and keys_of(name)[1]["at"] - keys_of(name)[0]["at"] >= 0.25
+                  for name in ("idle", "busy", "typing"))
+              and len(stuck) == 34 and stuck[1]["at"] - stuck[0]["at"] >= 0.25
+              and all(stuck[at]["at"] - stuck[at - 1]["at"] >= 0.4 for at in (17, 33)))
+        check("remote restore: the next try once the last had time to take",
+              len(stuck) == 34 and all(stuck[at]["at"] - stuck[at - 1]["at"] >= 2.9 for at in (2, 18)))
         check("remote restore: nothing left", not (store / ".remote.json").exists())
         result = remote("held", **timing)
         check("remote held: none once those sessions have it off", result.returncode == 1 and result.stdout == "")
@@ -745,8 +763,43 @@ try:
         for path in records.values():
             path.unlink(missing_ok=True)
 
-    # A switch remembers the sessions with Remote Control on, and claude-switch remote, started apart, types
-    # /remote-control there once Claude Code dropped it and the session waits idle at an empty prompt.
+        # Without the key: a keybindings.json Claude Code can't read, one marked read-only, which Windows can't
+        # replace, or a key of the user's in the way. The file stays as it is with nothing left beside it, and
+        # /remote-control is typed at an empty prompt, never over a draft.
+        records = {kind: start_session(kind, **options) for kind, options in (("empty", {}),
+                                                                              ("draft", {"typed": "fix the tests"}))}
+        taken = json.dumps({"bindings": [{"context": "Select", "bindings": {"ctrl+q": "select:cancel"}}]})
+        for name, text, read_only in (("that isn't JSON", "{ not json", False),
+                                      ("marked read-only", json.dumps({"bindings": []}), True),
+                                      ("with Ctrl+Q of the user", taken, False)):
+            keybindings.write_text(text, encoding="utf-8")
+            if read_only:
+                keybindings.chmod(stat.S_IREAD)
+            result = remote("save", **timing)
+            check(f"remote save: a keybindings.json {name} left as it is, with nothing beside it",
+                  result.returncode == 0 and keybindings.read_text(encoding="utf-8") == text
+                  and not list(claude_dir.glob("keybindings.json.*")))
+            keybindings.chmod(stat.S_IREAD | stat.S_IWRITE)
+        for path in records.values():
+            update(path, bridgeSessionId=None)
+        said = remote("restore", **dict(timing, CLAUDE_SWITCH_REMOTE_WAIT="6")).stdout
+        outcomes = dict(reversed(entry.split("\t")) for entry in said.splitlines())
+        typed = {kind: "".join(entry["key"] for entry in keys_of(kind)) for kind in records}
+        check("remote restore: without the key, /remote-control typed at an empty prompt",
+              outcomes.get("empty") == "back" and typed["empty"] == "/remote-control\r")
+        check("remote restore: without the key, nothing over text typed at the prompt",
+              outcomes.get("draft") == "lost" and typed["draft"] == "")
+        for process in fixtures:
+            process.kill()
+            process.wait()
+        fixtures.clear()
+        for path in records.values():
+            path.unlink(missing_ok=True)
+        keybindings.unlink()
+
+    # A switch remembers the sessions with Remote Control on, and claude-switch remote, started apart, presses Ctrl+X
+    # Ctrl+Q there, which it binds to /remote-control, once Claude Code dropped it and the session waits idle at its
+    # prompt. No root service here.
     timing = {"CLAUDE_SWITCH_REMOTE_DROP": "10", "CLAUDE_SWITCH_REMOTE_BACK": "10", "CLAUDE_SWITCH_REMOTE_WAIT": "20"}
     if WINDOWS:
         rc_record = start_session("rc-session")
@@ -772,7 +825,8 @@ try:
         def typed_keys():
             calls = [json.loads(entry)["args"] for entry in (fake_tmux / "log").read_text().splitlines()] \
                 if (fake_tmux / "log").exists() else []
-            return "".join("\r" if args[-1] == "Enter" else args[-1] for args in calls if args[0] == "send-keys")
+            keys = {"Enter": "\r", "C-x": "\x18", "C-q": "\x11"}
+            return "".join(keys.get(args[-1], args[-1]) for args in calls if args[0] == "send-keys")
     (state / "notify").unlink(missing_ok=True)
     result = run("ultra", **timing)
     saved = read(store / ".remote.json")["sessions"] if (store / ".remote.json").exists() else []
@@ -791,7 +845,10 @@ try:
         if "Remote Control is back" in log("notify"):
             break
         time.sleep(0.2)
-    check("remote: /remote-control typed in its terminal, then Enter", typed_keys() == "/remote-control\r")
+    check("remote: the key bound to /remote-control", keybindings.exists() and any(
+        block.get("context") == "Chat" and block.get("bindings", {}).get("ctrl+x ctrl+q") == "command:remote-control"
+        for block in read(keybindings).get("bindings", [])))
+    check("remote: Ctrl+X, then Ctrl+Q, in its terminal", typed_keys() == "\x18\x11")
     check("remote: says it's back, and under which account",
           "Remote Control is back In 1 session, under ultra: open it on claude.ai or in the Claude app signed in to it."
           in log("notify"))
@@ -829,11 +886,9 @@ try:
     fixtures.clear()
     rc_record.unlink(missing_ok=True)
 
-    # A session with Remote Control on that nothing can type in, one of Claude Desktop on Windows and one outside tmux
-    # elsewhere: going to a better claude.ai account waits for it while the account in use has room. A switch typed by
-    # hand, one a limit forces and one to a key go.
-    where = "outside a terminal" if WINDOWS else "outside tmux"
-
+    # A session with Remote Control on that nothing can reach, one of Claude Desktop on Windows and one outside tmux
+    # without the root service elsewhere: going to a better claude.ai account waits for it while the account in use has
+    # room. A switch typed by hand, one a limit forces and one to a key go.
     def plain_session(name):
         if WINDOWS:
             return start_session(name, entrypoint="claude-desktop")
@@ -868,26 +923,28 @@ try:
     plain = plain_session("plain-terminal")
     (state / "notify").unlink(missing_ok=True)
     result = run("auto", "on")
-    check("outside a terminal: a better account waits", marked("a@example.com") and (
-        f"It stays on a@example.com while Remote Control runs {where} in plain-terminal: a switch would take it from "
-        "them.") in result.stdout.splitlines())
+    check("out of reach:a better account waits", marked("a@example.com") and (
+        "It stays on a@example.com while Remote Control is on in plain-terminal, where a switch would take it for "
+        "good.") in result.stdout.splitlines())
     watched = out(run("watch")) + out(run("watch"))
-    check("outside a terminal: the watch waits too, quietly", marked("a@example.com") and watched == "")
-    check("outside a terminal: said once a day",
-          log("notify").count(f"It stays on a@example.com Remote Control runs {where} in plain-terminal") == 1)
-    check("outside a terminal: auto says what it waits for",
-          f"It waits to go there while Remote Control runs {where} in plain-terminal." in run("auto").stdout.splitlines())
+    check("out of reach:the watch waits too, quietly", marked("a@example.com") and watched == "")
+    check("out of reach:said once a day", log("notify").count(
+        "It stays on a@example.com Remote Control is on in plain-terminal, where claude-switch can't bring it "
+        "back") == 1)
+    check("out of reach:auto says what it waits for",
+          "It waits to go there while Remote Control is on in plain-terminal, where a switch would take it for good."
+          in run("auto").stdout.splitlines())
     end_plain_session(plain)
     result = run("watch")
-    check("outside a terminal: once the session ends, the better account", not marked("a@example.com")
+    check("out of reach:once the session ends, the better account", not marked("a@example.com")
           and re.search(r"^Switched to ", result.stdout, re.MULTILINE) is not None)
     plain = plain_session("plain-terminal-2")
     run("a@example.com")
-    check("outside a terminal: a switch typed by hand goes", marked("a@example.com"))
+    check("out of reach:a switch typed by hand goes", marked("a@example.com"))
     (store / ".hold").unlink(missing_ok=True)
     old_switch()
     result = hook({"session_id": "s9", "error": "rate_limit", "last_assistant_message": "You have hit your limit"})
-    check("outside a terminal: a switch the limit forces goes", result.returncode == 2 and not marked("a@example.com"))
+    check("out of reach:a switch the limit forces goes", result.returncode == 2 and not marked("a@example.com"))
     # A key leaves the login, and Remote Control with it, as they are: going to one doesn't wait.
     for path in (store / ".usage").glob("*.refused.json"):
         path.unlink()
@@ -898,7 +955,7 @@ try:
                            ("/key/info", "G-secret"): (200, budget(3.2, now() + 10 * DAY))})
     stale_all()
     result = run("watch")
-    check("outside a terminal: going to a key doesn't wait", not marked("a@example.com")
+    check("out of reach:going to a key doesn't wait", not marked("a@example.com")
           and re.search(r"^Switched to gw[0-9]*: ", result.stdout, re.MULTILINE) is not None)
     end_plain_session(plain)
 
