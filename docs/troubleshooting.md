@@ -107,6 +107,13 @@ On a Claude Code older than 2.1.330, the mobile app can show a session as workin
 turned on mid-conversation, which is what `/remote-control` after a switch does. Exit such a session and
 resume it with `claude --resume` to run the installed version.
 
+### The machine stays on an account while a better one has room
+
+`claude-switch auto` then says `It waits to go there while Remote Control runs outside tmux in ...`. Those
+sessions would lose Remote Control for good, so the better account waits until they end or the account in
+use runs out. Close them, or run them in tmux, or switch by hand with `claude-switch NAME` and run
+`/remote-control` in them afterwards.
+
 ### `Claude Desktop is open, so it stays on its account.`
 
 Desktop must be closed for a switch, and you answered no, or the switch came from a script without a

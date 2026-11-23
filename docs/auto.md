@@ -114,7 +114,9 @@ The same as with a switch you type, see [switch.md](switch.md), except for one t
 without asking when the switch goes from one claude.ai account to another. Its Code and Cowork tasks stop with
 it. A switch to or from a key leaves Desktop and Chrome alone. Every automatic switch shows a desktop
 notification. Remote Control comes back by itself in the sessions that had it, once each is idle at an empty
-prompt in tmux, see [switch.md](switch.md#running-sessions).
+prompt in tmux. While a session outside tmux has Remote Control on, the machine doesn't go to a better
+claude.ai account until the one in use runs out, since nothing could bring Remote Control back there. See
+[switch.md](switch.md#running-sessions).
 
 When the session that met the limit runs in Claude Desktop, in its Code tab, the hook runs inside Desktop, and
 closing Desktop would end the hook with the session. So the machine moves on, Desktop stays on its account, and

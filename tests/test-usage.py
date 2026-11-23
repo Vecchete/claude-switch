@@ -179,6 +179,9 @@ def remote_checks(m, sessions):
         check("remote save: each with its pane", {s["name"]: s["pane"] for s in state["sessions"]}["idle"] == "%1"
               and {s["name"]: s["pane"] for s in state["sessions"]}["elsewhere"] is None)
         check("remote save: private", (m.store / ".remote.json").stat().st_mode & 0o777 == 0o600)
+        rc, out = run("held")
+        check("remote held: Remote Control a switch would take for good, outside tmux or another pane",
+              rc == 0 and sorted(out.split()) == ["elsewhere", "other"])
         # Claude Code drops Remote Control within seconds of the switch, but in a session that keeps it.
         for name in ("idle", "busy", "typing", "elsewhere", "scrolled", "other", "stuck"):
             update(name, bridgeSessionId=None)
@@ -204,6 +207,8 @@ def remote_checks(m, sessions):
         check("remote restore: only in an idle session",
               all(entry["status"] == "idle" for entry in log if entry["args"][0] == "send-keys"))
         check("remote restore: nothing left", not (m.store / ".remote.json").exists())
+        rc, out = run("held")
+        check("remote held: none once those sessions have it off", rc == 1 and out == "")
     finally:
         for process in processes.values():
             process.kill()

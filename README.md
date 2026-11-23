@@ -294,7 +294,9 @@ and says how to report a problem.
   Desktop asks for one sign-in.
 - A switch to another claude.ai account takes Remote Control from the sessions. claude-switch types
   `/remote-control` back in those that run in tmux, once each waits idle at an empty prompt, and names the
-  others. A phone or another browser shows them once it's signed in to the new account.
+  others. While one outside tmux has Remote Control on, automatic switching doesn't go to a better
+  claude.ai account until the one in use runs out. A phone or another browser shows the sessions once
+  it's signed in to the new account.
 - What a subscription has left comes from an endpoint Anthropic doesn't document. When it changes, `list`
   shows `-` and automatic switching moves on only when a session meets a limit.
 - Automatic switching wakes a session through a `StopFailure` hook with `asyncRewake`, checked with Claude

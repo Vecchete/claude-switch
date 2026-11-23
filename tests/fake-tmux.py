@@ -24,7 +24,11 @@ if pane is None:
     print(f"can't find pane: {target}", file=sys.stderr)
     sys.exit(1)
 if arguments[0] == "display-message":
-    print(f"{pane['pane_pid']}\t{pane['x']}\t{pane['y']}\t{pane.get('mode', '0')}")
+    values = {"pane_pid": pane["pane_pid"], "cursor_x": pane["x"], "cursor_y": pane["y"], "pane_in_mode": pane.get("mode", "0")}
+    text = arguments[-1]
+    for name, value in values.items():
+        text = text.replace("#{" + name + "}", str(value))
+    print(text)
 elif arguments[0] == "capture-pane":
     print(pane["line"])
 elif arguments[0] == "send-keys" and arguments[-1] == "Enter" and pane.get("reconnects") and record is not None:

@@ -69,6 +69,12 @@ typing at, or a pane that runs another program, and it types once per session. A
 Remote Control is back, and under which account. It names the sessions it couldn't bring back within 15
 minutes, and those that don't run in tmux, so you can run `/remote-control` in them yourself.
 
+Nothing can type in a session that runs outside tmux: in another terminal, in VS Code or in Desktop. So
+while one of those has Remote Control on, [automatic switching](auto.md) doesn't go to a better claude.ai
+account as long as the account in use has room. It stays, says so in a notification once a day and in
+`claude-switch auto`, and moves on once those sessions end or the account in use runs out. A switch you
+type, one a limit forces, and one to a key still go.
+
 A phone or another computer shows the sessions once it's signed in to the account the machine moved to:
 claude.ai in Chrome here follows the switch, see [chrome.md](chrome.md), but the Claude app and other
 browsers keep the account they're on.

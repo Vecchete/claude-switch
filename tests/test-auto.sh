@@ -429,5 +429,62 @@ check "remote: says it's back, and under which account" 'grep -q "Remote Control
 check "remote is no name" '[ "$rc" -ne 0 ] && grep -q "remote is a command of this script" "$T/out"'
 kill "$RC_PID" 2>/dev/null
 
+# A session outside tmux with Remote Control on: nothing can type /remote-control there, so going to a better
+# claude.ai account waits for it while the account in use has room. A switch typed by hand or forced by a limit goes.
+# A session with Remote Control on, outside tmux. NAME
+plain_session() {
+    sleep 300 &
+    PLAIN_PID=$!
+    PLAIN_RECORD=$HOME/.claude/sessions/$PLAIN_PID.json
+    jq -n --argjson pid "$PLAIN_PID" --arg started "$(sed 's/.*) //' "/proc/$PLAIN_PID/stat" | cut -d' ' -f20)" \
+        --arg name "$1" '{pid: $pid, procStart: $started, kind: "interactive", status: "idle", name: $name,
+        bridgeSessionId: "session_plain"}' > "$PLAIN_RECORD"
+}
+end_plain_session() { kill "$PLAIN_PID" 2>/dev/null; rm -f "$PLAIN_RECORD"; }
+rm -f "$STORE"/.usage/*.refused.json "$STORE/.hold"
+answer /api/oauth/usage A-token 200 "$(week 60 $(($(now) + 3 * DAY)) 10)"
+answer /api/oauth/usage U-token 200 "$(week 30 $(($(now) + 2 * DAY)))"
+answer /api/oauth/usage U2-access 200 "$(week 10 $(($(now) + DAY)))"
+for reading in "$STORE"/.usage/*@*.json; do
+    case $reading in *.refused.json) ;; *) stale "$(basename "${reading%.json}")" ;; esac
+done
+"$SCRIPT" a@example.com > /dev/null 2>&1
+plain_session plain-terminal
+"$SCRIPT" auto on > "$T/out" 2>&1
+check "outside tmux: a better account waits" 'marked a@example.com \
+    && grep -qx "It stays on a@example.com while Remote Control runs outside tmux in plain-terminal: a switch would take it from them." "$T/out"'
+"$SCRIPT" watch > "$T/out" 2>&1
+"$SCRIPT" watch >> "$T/out" 2>&1
+check "outside tmux: the watch waits too, quietly" 'marked a@example.com && [ ! -s "$T/out" ]'
+check "outside tmux: said once a day" '[ "$(grep -c "It stays on a@example.com Remote Control runs outside tmux in plain-terminal" "$T/notify")" = 1 ]'
+"$SCRIPT" auto > "$T/out" 2>&1
+check "outside tmux: auto says what it waits for" \
+    'grep -qx "It waits to go there while Remote Control runs outside tmux in plain-terminal." "$T/out"'
+end_plain_session
+open_session
+"$SCRIPT" watch > "$T/out" 2>&1
+check "outside tmux: once the session ends, the better account" '! marked a@example.com && grep -q "^Switched to " "$T/out"'
+close_session
+plain_session plain-terminal-2
+"$SCRIPT" a@example.com > "$T/out" 2>&1
+check "outside tmux: a switch typed by hand goes" 'marked a@example.com'
+rm -f "$STORE/.hold"
+old_switch
+hook '{"session_id": "s9", "error": "rate_limit", "last_assistant_message": "You have hit your limit"}'
+check "outside tmux: a switch the limit forces goes" '[ "$RC" -eq 2 ] && ! marked a@example.com'
+# A key leaves the login, and Remote Control with it, as they are: going to one doesn't wait.
+rm -f "$STORE"/.usage/*.refused.json
+"$SCRIPT" a@example.com > /dev/null 2>&1
+rm -f "$STORE/.hold"
+answer /api/oauth/usage U-token 200 "$(week 100 $(($(now) + 2 * DAY)))"
+answer /api/oauth/usage U2-access 200 "$(week 100 $(($(now) + DAY)))"
+answer /key/info G-secret 200 "$(budget 3.2 $(($(now) + 10 * DAY)))"
+for reading in "$STORE"/.usage/*.json; do
+    case $reading in *.refused.json) ;; *) stale "$(basename "${reading%.json}")" ;; esac
+done
+"$SCRIPT" watch > "$T/out" 2>&1
+check "outside tmux: going to a key doesn't wait" '! marked a@example.com && grep -qE "^Switched to gw[0-9]*: " "$T/out"'
+end_plain_session
+
 printf '%d passed, %d failed\n' "$passes" "$fails"
 [ "$fails" -eq 0 ]

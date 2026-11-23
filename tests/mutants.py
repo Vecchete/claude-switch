@@ -245,6 +245,16 @@ MUTANTS = [
     ("remote-back-unsaid", "switch", "auto", '        notify "Remote Control is back"', '        : "Remote Control is back"'),
     ("remote-name-free", "switch", "auto", "        list|login|key|rename|delete|refresh|help|auto|watch|hook|remote)\n",
      "        list|login|key|rename|delete|refresh|help|auto|watch|hook)\n"),
+    # A better account waits while Remote Control runs where nothing can bring it back.
+    ("remote-held-ignored", "switch", "auto", '    if ROUTED_HELD=$(remote_holds "$best" "$active"); then\n',
+     "    if false; then\n"),
+    ("remote-held-when-needed", "switch", "auto", '    ! "$USAGE_HELPER" why "$2" >/dev/null 2>&1 || return 1\n', ""),
+    ("remote-held-for-a-key", "switch", "auto", '&& ! is_key "$1" && [ "$1" != "$(live_file || true)" ] || return 1\n',
+     '&& [ "$1" != "$(live_file || true)" ] || return 1\n'),
+    ("remote-held-said-each-time", "switch", "auto", '        notify_once "remote-held" "It stays on $LABEL"',
+     '        notify "It stays on $LABEL"'),
+    ("remote-held-unsaid-by-auto", "switch", "auto",
+     "            printf 'It waits to go there while Remote Control runs outside tmux in %s.\\n' \"$waiting\"\n", ""),
     ("temp-files-of-others-removed", "switch", "keys",
      '    [ "${#WRITING[@]}" -eq 0 ] || rm -f "${WRITING[@]}"\n',
      '    rm -f "$CREDENTIALS.switch" "$CONFIG.switch" "$(settings_target).switch"\n'),
@@ -408,9 +418,12 @@ MUTANTS = [
      "    if True:\n        return session\n"),
     # What brings Remote Control back types only where it can't do harm, once.
     ("remote-saves-every-session", "usage", "usage",
-     '            if session is None or session.get("kind") != "interactive" \\\n'
-     '                    or not isinstance(session.get("bridgeSessionId"), str):\n',
-     '            if session is None or session.get("kind") != "interactive":\n'),
+     '        if session is not None and session.get("kind") == "interactive" \\\n'
+     '                and isinstance(session.get("bridgeSessionId"), str):\n',
+     '        if session is not None and session.get("kind") == "interactive":\n'),
+    ("remote-held-in-another-program", "usage", "usage",
+     '        return descends(session.get("pid"), int(info.strip()))\n', "        return info is not None\n"),
+    ("remote-held-outside-tmux-unsaid", "usage", "usage", "if not in_its_pane(session)]", "if False]"),
     ("remote-types-while-busy", "usage", "usage", '    if session.get("status") == "idle" and at_empty_prompt(',
      "    if at_empty_prompt("),
     ("remote-types-in-copy-mode", "usage", "usage", '    if mode != "0" or not descends(pid, pane_pid):\n',

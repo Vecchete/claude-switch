@@ -32,6 +32,8 @@ resets before one that doesn't, credit nobody can read last.
     usage.py remote restore               type /remote-control in the tmux pane of each of them once it dropped Remote
                                           Control and waits idle at an empty prompt. Prints back or lost, a tab and
                                           the name of each session, exit 1 when another restore runs
+    usage.py remote held                  the sessions with Remote Control on that restore couldn't type in, outside
+                                          tmux, one name a line, exit 1 when there are none
 """
 import argparse
 import concurrent.futures
@@ -628,6 +630,34 @@ def at_empty_prompt(pane, pid):
     return text in PROMPTS and x == len(text) + 1
 
 
+def pane_of(session):
+    """The tmux pane a session runs in, %N, from the session:@window.%pane Claude Code records, None outside tmux."""
+    return str(session.get("tmux") or "").rpartition(".")[2] or None
+
+
+def name_of(session):
+    return str(session.get("name") or session.get("cwd") or session.get("pid"))
+
+
+def in_its_pane(session):
+    """True when the tmux pane of SESSION is there and runs its Claude Code."""
+    pane = pane_of(session)
+    info = tmux("display-message", "-p", "-t", pane, "#{pane_pid}") if pane else None
+    try:
+        return descends(session.get("pid"), int(info.strip()))
+    except (AttributeError, ValueError):
+        return False
+
+
+def with_remote_control():
+    """The records of the running interactive sessions with Remote Control on."""
+    for path in SESSIONS.glob("*.json"):
+        session = live_session(path)
+        if session is not None and session.get("kind") == "interactive" \
+                and isinstance(session.get("bridgeSessionId"), str):
+            yield session
+
+
 def type_remote_control(pane):
     if tmux("send-keys", "-t", pane, "-l", "/remote-control") is None:
         return False
@@ -648,17 +678,20 @@ def command_remote_save(arguments):
     with remote_lock(".remote.lock") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         kept = {entry.get("pid"): entry for entry in (load(REMOTE) or {}).get("sessions", []) if isinstance(entry, dict)}
-        for path in SESSIONS.glob("*.json"):
-            session = live_session(path)
-            if session is None or session.get("kind") != "interactive" \
-                    or not isinstance(session.get("bridgeSessionId"), str):
-                continue
-            pane = str(session.get("tmux") or "").rpartition(".")[2] or None
-            kept[session.get("pid")] = {"pid": session.get("pid"), "start": session.get("procStart"), "pane": pane,
-                                        "name": str(session.get("name") or session.get("cwd") or session.get("pid")),
-                                        "since": now, "off": False, "typed": None}
+        for session in with_remote_control():
+            kept[session.get("pid")] = {"pid": session.get("pid"), "start": session.get("procStart"),
+                                        "pane": pane_of(session), "name": name_of(session), "since": now,
+                                        "off": False, "typed": None}
         write_private(REMOTE, {"sessions": list(kept.values())})
     return 0
+
+
+def command_remote_held(arguments):
+    """The sessions a switch would take Remote Control from for good: nothing can type /remote-control outside tmux."""
+    held = [name_of(session) for session in with_remote_control() if not in_its_pane(session)]
+    for name in held:
+        print(name)
+    return 0 if held else 1
 
 
 def remote_step(entry, now):
@@ -734,10 +767,11 @@ def main(argv):
     refuse.add_argument("reason")
     refuse.add_argument("message", nargs="?", default="")
     commands.add_parser("why").add_argument("file")
-    commands.add_parser("remote").add_argument("step", choices=("save", "restore"))
+    commands.add_parser("remote").add_argument("step", choices=("save", "restore", "held"))
     arguments = parser.parse_args(argv)
     if arguments.command == "remote":
-        return {"save": command_remote_save, "restore": command_remote_restore}[arguments.step](arguments)
+        return {"save": command_remote_save, "restore": command_remote_restore,
+                "held": command_remote_held}[arguments.step](arguments)
     return {"sessions": command_sessions, "read": command_read, "left": command_left, "best": command_best,
             "refuse": command_refuse, "why": command_why, "first": command_first}[arguments.command](arguments)
 
